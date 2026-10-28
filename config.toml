@@ -1,0 +1,59 @@
+# Configuración de hypr-win.
+# Se busca primero el argumento de línea de comandos, luego config.toml junto al
+# ejecutable y por último en el directorio actual.
+
+# Atajos: "Modificadores+Tecla, acción, argumento".
+# Modificadores: Super (Win), Shift, Ctrl, Alt.
+# Acciones: exec <comando>, close, focus <left|right|up|down>,
+#           move <left|right|up|down>, workspace <1-9>, movetoworkspace <1-9>,
+#           fullscreen, togglelayout, quit
+binds = [
+    "Super+Return, exec, wt.exe",
+    "Super+Q, close",
+    "Super+Left, focus, left",
+    "Super+Right, focus, right",
+    "Super+Up, focus, up",
+    "Super+Down, focus, down",
+    "Super+Shift+Left, move, left",
+    "Super+Shift+Right, move, right",
+    "Super+Shift+Up, move, up",
+    "Super+Shift+Down, move, down",
+    "Super+F, fullscreen",
+    "Super+Space, togglelayout",
+    "Super+Shift+E, quit",
+    "Super+1, workspace, 1",
+    "Super+2, workspace, 2",
+    "Super+3, workspace, 3",
+    "Super+4, workspace, 4",
+    "Super+5, workspace, 5",
+    "Super+6, workspace, 6",
+    "Super+7, workspace, 7",
+    "Super+8, workspace, 8",
+    "Super+9, workspace, 9",
+    "Super+Shift+1, movetoworkspace, 1",
+    "Super+Shift+2, movetoworkspace, 2",
+    "Super+Shift+3, movetoworkspace, 3",
+    "Super+Shift+4, movetoworkspace, 4",
+    "Super+Shift+5, movetoworkspace, 5",
+    "Super+Shift+6, movetoworkspace, 6",
+    "Super+Shift+7, movetoworkspace, 7",
+    "Super+Shift+8, movetoworkspace, 8",
+    "Super+Shift+9, movetoworkspace, 9",
+]
+
+[general]
+layout = "dwindle"     # "dwindle" | "master"
+workspaces = 9         # 1..=9
+gaps_in = 8            # px entre ventanas
+gaps_out = 8           # px entre ventanas y el borde del área de trabajo
+master_ratio = 0.55    # fracción del ancho para la ventana master (layout master)
+
+[bar]
+height = 32            # px a 96 DPI (se escala con el DPI del sistema)
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+dim = "#6c7086"        # workspaces vacíos
+accent = "#89b4fa"     # fondo del workspace activo
+accent_text = "#1e1e2e"
+font = "Segoe UI"
+font_size = 10         # puntos
