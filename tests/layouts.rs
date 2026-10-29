@@ -133,6 +133,30 @@ fn bindings_parse() {
 }
 
 #[test]
+fn relative_actions_parse() {
+    assert_eq!(parse_binding("Super+Tab, cycle, next").unwrap().action, Action::Cycle(1));
+    assert_eq!(parse_binding("Super+Shift+Tab, cycle, prev").unwrap().action, Action::Cycle(-1));
+    assert_eq!(parse_binding("Super+Ctrl+Left, workspace, prev").unwrap().action, Action::WorkspaceRel(-1));
+    assert_eq!(
+        parse_binding("Super+Ctrl+Shift+Right, movetoworkspace, next").unwrap().action,
+        Action::MoveToWorkspaceRel(1)
+    );
+    assert!(parse_binding("Super+Tab, cycle").is_err());
+}
+
+#[test]
+fn launcher_action_parses() {
+    let b = parse_binding("Ctrl+K, launcher").unwrap();
+    assert_eq!(b.action, Action::Launcher);
+    assert_eq!(b.vk, b'K' as u32);
+}
+
+#[test]
+fn none_action_parses() {
+    assert_eq!(parse_binding("Super+S, none").unwrap().action, Action::None);
+}
+
+#[test]
 fn default_config_is_valid() {
     let c = Config::default_config();
     assert_eq!(c.general.workspaces, 9);

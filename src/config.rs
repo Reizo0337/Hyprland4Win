@@ -15,6 +15,16 @@ pub struct General {
     pub gaps_in: i32,
     pub gaps_out: i32,
     pub master_ratio: f32,
+    /// Duración de las animaciones en ms (0 = sin animaciones).
+    pub animation_ms: u32,
+    /// El foco sigue al ratón (sin hacer clic).
+    pub focus_follows_mouse: bool,
+    /// Desactiva (solo mientras corre hypr-win) la animación de minimizar/maximizar de Windows.
+    pub disable_windows_animations: bool,
+    /// Oculta la barra de tareas de Windows (ShowWindow sobre `Shell_TrayWnd`) mientras corre.
+    pub hide_taskbar: bool,
+    /// Traga la tecla Win sola para que no abra el menú Inicio.
+    pub block_start_menu: bool,
 }
 
 impl Default for General {
@@ -25,6 +35,11 @@ impl Default for General {
             gaps_in: 8,
             gaps_out: 8,
             master_ratio: 0.55,
+            animation_ms: 180,
+            focus_follows_mouse: true,
+            disable_windows_animations: false,
+            hide_taskbar: false,
+            block_start_menu: false,
         }
     }
 }
@@ -40,19 +55,48 @@ pub struct Bar {
     pub accent_text: String,
     pub font: String,
     pub font_size: i32,
+    /// Opacidad de la barra (20-100 %); el lanzador usa una fija.
+    pub opacity: u8,
 }
 
 impl Default for Bar {
     fn default() -> Self {
         Self {
-            height: 32,
-            background: "#1e1e2e".into(),
-            foreground: "#cdd6f4".into(),
-            dim: "#6c7086".into(),
-            accent: "#89b4fa".into(),
-            accent_text: "#1e1e2e".into(),
-            font: "Segoe UI".into(),
+            height: 28,
+            background: "#1e1e20".into(),
+            foreground: "#f5f5f7".into(),
+            dim: "#8e8e93".into(),
+            accent: "#0a84ff".into(),
+            accent_text: "#ffffff".into(),
+            font: "Segoe UI Variable Text".into(),
             font_size: 10,
+            opacity: 80,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Dock {
+    pub enabled: bool,
+    /// Tamaño de los iconos en px a 96 DPI.
+    pub icon_size: i32,
+    /// Escala máxima del icono bajo el cursor (1.0 = sin magnificación).
+    pub magnification: f32,
+    /// Apps fijadas, por nombre (búsqueda difusa en la lista de aplicaciones).
+    pub pinned: Vec<String>,
+    /// Mostrar también las apps abiertas que no están fijadas.
+    pub show_running: bool,
+}
+
+impl Default for Dock {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            icon_size: 48,
+            magnification: 1.7,
+            pinned: ["Explorador", "Edge", "Terminal", "Configuración", "Calculadora"].map(String::from).to_vec(),
+            show_running: true,
         }
     }
 }
@@ -72,6 +116,8 @@ pub struct Config {
     pub general: General,
     #[serde(default)]
     pub bar: Bar,
+    #[serde(default)]
+    pub dock: Dock,
     #[serde(default = "default_binds")]
     pub binds: Vec<String>,
 }
@@ -114,9 +160,22 @@ impl Config {
         if !(0.1..=0.9).contains(&g.master_ratio) {
             return Err("general.master_ratio debe estar entre 0.1 y 0.9".into());
         }
+        if g.animation_ms > 1000 {
+            return Err("general.animation_ms debe estar entre 0 y 1000".into());
+        }
+        let d = &self.dock;
+        if !(24..=96).contains(&d.icon_size) {
+            return Err("dock.icon_size debe estar entre 24 y 96".into());
+        }
+        if !(1.0..=2.5).contains(&d.magnification) {
+            return Err("dock.magnification debe estar entre 1.0 y 2.5".into());
+        }
         let b = &self.bar;
         if !(16..=200).contains(&b.height) {
             return Err("bar.height debe estar entre 16 y 200".into());
+        }
+        if !(20..=100).contains(&b.opacity) {
+            return Err("bar.opacity debe estar entre 20 y 100".into());
         }
         if !(6..=48).contains(&b.font_size) {
             return Err("bar.font_size debe estar entre 6 y 48".into());

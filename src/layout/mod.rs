@@ -36,6 +36,13 @@ impl Rect {
         Rect::new(self.x + (self.w - w) / 2, self.y + (self.h - h) / 2, w, h)
     }
 
+    /// Escala el rectángulo alrededor de su centro (para el efecto pop-in).
+    pub fn scaled(&self, f: f32) -> Rect {
+        let w = ((self.w as f32 * f) as i32).max(1);
+        let h = ((self.h as f32 * f) as i32).max(1);
+        Rect::new(self.x + (self.w - w) / 2, self.y + (self.h - h) / 2, w, h)
+    }
+
     pub fn intersects(&self, o: &Rect) -> bool {
         self.x < o.right() && o.x < self.right() && self.y < o.bottom() && o.y < self.bottom()
     }

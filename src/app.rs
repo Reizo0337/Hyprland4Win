@@ -1,20 +1,43 @@
-//! Pegamento entre el modelo de workspaces, los layouts y Win32.
+//! Pegamento entre el modelo de workspaces/monitores, los layouts, las animaciones y Win32.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::ffi::c_void;
+use std::collections::{HashMap, HashSet};
 
 use windows::core::{w, HSTRING, PCWSTR};
-use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::anim::Item;
+use crate::animator;
+use crate::appid::AppIdentity;
 use crate::bar;
+use crate::dock;
 use crate::config::Config;
 use crate::keybinds::{Action, Binding, Dir};
+use crate::launcher;
+use crate::panel;
 use crate::layout::{self, Gaps, Rect};
-use crate::window;
-use crate::workspace::{neighbor, Model};
+use crate::window::{self, MonitorInfo};
+use crate::workspace::{monitor_at, neighbor, Model};
+
+/// Cómo entra una ventana al layout.
+#[derive(Clone, Copy)]
+enum Enter {
+    /// Desde donde está ahora.
+    None,
+    /// Desde el 94 % de su tamaño (workspace sin eje libre para deslizar).
+    PopIn,
+    /// Directo a su sitio, sin animar (ventana recién creada: así no se ve el salto).
+    Snap,
+    /// Desde su destino desplazado (dx, dy): entrada de un workspace deslizándose.
+    Slide(i32, i32),
+}
+
+/// Los workspaces sin hueco para deslizar aparecen al 94 % de su tamaño (efecto pop-in de Hyprland).
+const POPIN_SCALE: f32 = 0.94;
+
+/// Espera antes de que los vecinos ocupen el hueco de una ventana cerrada.
+const CLOSE_DELAY_MS: u32 = 110;
 
 pub struct App {
     cfg: Config,
@@ -22,7 +45,23 @@ pub struct App {
     model: Model,
     /// Posición original de cada ventana gestionada, para restaurarla al salir.
     originals: HashMap<isize, Rect>,
-    work: Rect,
+    mons: Vec<MonitorInfo>,
+    mouse: MouseFocus,
+    /// Ventanas recién creadas: van directas a su hueco mientras las demás se animan.
+    fresh: HashSet<isize>,
+    /// Identidad de app de cada ventana (para el dock); se calcula una sola vez por ventana.
+    identities: std::cell::RefCell<HashMap<isize, Option<AppIdentity>>>,
+    /// Retraso (ms) del arranque de las animaciones; se usa al cerrar una ventana.
+    next_delay: u32,
+}
+
+/// Estado del foco por ratón: solo actúa si el cursor se movió y se detuvo un instante sobre la ventana.
+#[derive(Default)]
+struct MouseFocus {
+    last_pt: (i32, i32),
+    armed: bool,
+    candidate: isize,
+    stable: u8,
 }
 
 thread_local! {
@@ -58,41 +97,83 @@ pub fn on_event(event: u32, hwnd: isize) {
     with(|a| a.on_event(event, hwnd));
 }
 
-pub fn on_bar_click(index: usize) {
-    with(|a| a.switch_workspace(index));
-}
-
-pub fn on_work_area_changed() {
+pub fn on_bar_click(bar: usize, ws: usize) {
     with(|a| {
-        let new = work_area();
-        if new != a.work {
-            a.work = new;
-            a.retile();
+        if bar < a.model.mon_ws.len() {
+            a.model.focused_mon = bar;
+            a.show_workspace(ws);
         }
     });
 }
 
-pub fn work_area() -> Rect {
-    let mut r = RECT::default();
-    unsafe {
-        let _ = SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut r as *mut _ as *mut c_void), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
-    }
-    Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top)
+pub fn dock_activate(hwnds: Vec<isize>) {
+    with(|a| a.dock_activate(hwnds));
+}
+
+pub fn on_settle() {
+    with(|a| a.retile_visible(Enter::None));
+}
+
+pub fn on_mouse_tick() {
+    with(|a| a.mouse_tick());
+}
+
+/// `reposition`: los monitores cambiaron (resolución, disposición); si no, solo el área de trabajo.
+pub fn on_work_area_changed(reposition: bool) {
+    with(|a| a.refresh_monitors(reposition));
+}
+
+pub fn binding_count() -> usize {
+    with(|a| a.binds.len()).unwrap_or(0)
+}
+
+pub fn bindings() -> Vec<Binding> {
+    with(|a| a.binds.clone()).unwrap_or_default()
+}
+
+pub fn build(cfg: Config, mons: Vec<MonitorInfo>) -> Result<App, String> {
+    let binds = cfg.bindings()?;
+    let model = Model::new(cfg.general.workspaces, cfg.layout_kind(), mons.len());
+    let managed = model.mon_ws.len();
+    let mut mons = mons;
+    mons.truncate(managed);
+    claim_taskbar_space(&mut mons, cfg.general.hide_taskbar, dock_reserve(&cfg));
+    Ok(App { cfg, binds, model, originals: HashMap::new(), mons, mouse: MouseFocus::default(), fresh: HashSet::new(), identities: Default::default(), next_delay: 0 })
 }
 
 impl App {
-    pub fn new(cfg: Config, binds: Vec<Binding>) -> Self {
-        let model = Model::new(cfg.general.workspaces, cfg.layout_kind());
-        Self { cfg, binds, model, originals: HashMap::new(), work: work_area() }
-    }
-
     fn gaps(&self) -> Gaps {
         Gaps { inner: self.cfg.general.gaps_in, outer: self.cfg.general.gaps_out }
     }
 
-    fn rects(&self, ws: usize) -> Vec<Rect> {
+    fn mon_rects(&self) -> Vec<Rect> {
+        self.mons.iter().map(|m| m.rect).collect()
+    }
+
+    fn rects_for(&self, ws: usize, mon: usize) -> Vec<Rect> {
         let w = &self.model.ws[ws];
-        layout::arrange(w.layout, self.work, w.windows.len(), self.gaps(), self.cfg.general.master_ratio)
+        layout::arrange(w.layout, self.mons[mon].work, w.windows.len(), self.gaps(), self.cfg.general.master_ratio)
+    }
+
+    fn refresh_monitors(&mut self, reposition: bool) {
+        let mut now = window::monitors();
+        if now.len() < self.mons.len() {
+            eprintln!("aviso: cambió el número de monitores; reinicia hypr-win");
+            return;
+        }
+        now.truncate(self.mons.len());
+        if reposition {
+            bar::reposition_all(&now);
+            now = window::monitors();
+            now.truncate(self.mons.len());
+        }
+        claim_taskbar_space(&mut now, self.cfg.general.hide_taskbar, dock_reserve(&self.cfg));
+        let changed = now.iter().zip(&self.mons).any(|(a, b)| a.rect != b.rect || a.work != b.work);
+        if changed {
+            self.mons = now;
+            dock::set_monitors(&self.mon_rects());
+            self.retile_visible(Enter::None);
+        }
     }
 
     fn adopt_existing(&mut self) {
@@ -100,47 +181,219 @@ impl App {
             self.track(h);
         }
         let fg = window::foreground();
-        if self.model.active_ws().windows.contains(&fg) {
-            self.model.active_mut().focused = Some(fg);
+        if let Some(ws) = self.model.find(fg) {
+            self.model.ws[ws].focused = Some(fg);
+            if let Some(mon) = self.model.visible_on(ws) {
+                self.model.focused_mon = mon;
+            }
         }
-        self.retile();
+        self.fresh.clear();
+        self.retile_visible(Enter::None);
+        if self.cfg.general.focus_follows_mouse {
+            unsafe {
+                SetTimer(Some(bar::hwnd()), bar::TIMER_MOUSE, 40, None);
+            }
+        }
     }
 
-    fn track(&mut self, h: isize) -> bool {
-        if self.model.find(h).is_some() || !window::is_manageable(window::to_hwnd(h)) {
-            return false;
+    fn mouse_tick(&mut self) {
+        if launcher::is_open() || panel::is_open() {
+            return; // el lanzador y el panel necesitan conservar el foco
         }
+        let Some(pt) = window::cursor_pos() else { return };
+        let m = &mut self.mouse;
+        if pt != m.last_pt {
+            m.last_pt = pt;
+            m.armed = true;
+        }
+        if !m.armed || window::mouse_button_down() {
+            return;
+        }
+        let h = window::window_at(pt);
+        if h != m.candidate {
+            m.candidate = h;
+            m.stable = 0;
+            return;
+        }
+        m.stable = m.stable.saturating_add(1);
+        if m.stable != 2 {
+            return;
+        }
+        m.armed = false;
+        let Some(ws) = self.model.find(h) else { return };
+        let Some(mon) = self.model.visible_on(ws) else { return };
+        if window::foreground() == h && mon == self.model.focused_mon {
+            return;
+        }
+        self.model.ws[ws].focused = Some(h);
+        self.model.focused_mon = mon;
+        window::focus(h);
+        self.update_bar();
+    }
+
+    /// Empieza a gestionar la ventana en el workspace visible del monitor donde está.
+    fn track(&mut self, h: isize) -> Option<usize> {
+        if self.model.find(h).is_some() || !window::is_manageable(window::to_hwnd(h)) {
+            return None;
+        }
+        let cur = window::current_rect(h)?;
         if let Some(r) = window::normal_rect(window::to_hwnd(h)) {
             self.originals.insert(h, r);
         }
-        self.model.add(h, self.model.active);
-        true
+        let (cx, cy) = cur.center();
+        let mon = monitor_at(&self.mon_rects(), cx, cy);
+        let ws = self.model.mon_ws[mon];
+        self.model.add(h, ws);
+        self.fresh.insert(h);
+        Some(ws)
     }
 
     fn update_bar(&self) {
         let occupied = self.model.ws.iter().map(|w| !w.windows.is_empty()).collect();
-        let title = self
+        let per_mon = self
             .model
-            .active_ws()
-            .focus_target()
-            .map(|h| window::title(window::to_hwnd(h)))
-            .unwrap_or_default();
-        bar::set_state(self.model.active, occupied, title);
+            .mon_ws
+            .iter()
+            .map(|&ws| {
+                let title = self.model.ws[ws]
+                    .focus_target()
+                    .map(|h| window::title(window::to_hwnd(h)))
+                    .unwrap_or_default();
+                (ws, title)
+            })
+            .collect();
+        bar::set_state(per_mon, occupied, self.model.focused_mon);
+        self.update_dock();
     }
 
-    /// Recalcula y aplica el layout del workspace activo.
-    fn retile(&mut self) {
-        let ws = self.model.active;
+    /// Agrupa las ventanas gestionadas por aplicación y se las pasa al dock.
+    fn update_dock(&self) {
+        if !self.cfg.dock.enabled {
+            return;
+        }
+        let mut groups: Vec<dock::Running> = Vec::new();
+        for ws in &self.model.ws {
+            for &h in &ws.windows {
+                let ident = self.identities.borrow_mut().entry(h).or_insert_with(|| window::app_identity(h)).clone();
+                let Some(ident) = ident else { continue };
+                match groups.iter_mut().find(|g| g.ident.key() == ident.key()) {
+                    Some(g) => g.hwnds.push(h),
+                    None => groups.push(dock::Running { ident, hwnds: vec![h] }),
+                }
+            }
+        }
+        dock::update(groups);
+    }
+
+    /// Clic en el dock: enfoca una ventana de la app (la siguiente si ya tiene el foco).
+    fn dock_activate(&mut self, hwnds: Vec<isize>) {
+        let fg = window::foreground();
+        let pos = hwnds.iter().position(|&h| h == fg);
+        let Some(&h) = hwnds.get(pos.map_or(0, |p| (p + 1) % hwnds.len())) else { return };
+        let Some(ws) = self.model.find(h) else { return };
+        self.model.ws[ws].focused = Some(h);
+        match self.model.visible_on(ws) {
+            Some(mon) => {
+                self.model.focused_mon = mon;
+                window::focus(h);
+                self.update_bar();
+            }
+            None => self.show_workspace(ws),
+        }
+    }
+
+    fn retile_visible(&mut self, enter: Enter) {
+        for ws in self.model.mon_ws.clone() {
+            self.retile_ws(ws, enter);
+        }
+    }
+
+    /// Recalcula el layout del workspace `ws` (si algún monitor lo muestra) y anima las ventanas.
+    fn retile_ws(&mut self, ws: usize, enter: Enter) {
+        let Some(mon) = self.model.visible_on(ws) else { return };
         let w = &self.model.ws[ws];
-        let items: Vec<(isize, Rect)> = match w.fullscreen {
-            Some(f) => vec![(f, self.work)],
-            None => w.windows.iter().copied().zip(self.rects(ws)).collect(),
+        let fullscreen = w.fullscreen;
+        let items: Vec<(isize, Rect)> = match fullscreen {
+            Some(f) => vec![(f, self.mons[mon].work)],
+            None => w.windows.iter().copied().zip(self.rects_for(ws, mon)).collect(),
         };
-        window::place(&items);
-        if let Some(f) = w.fullscreen {
+        for (h, vis) in items {
+            let e = if self.fresh.remove(&h) { Enter::Snap } else { enter };
+            self.move_to(h, vis, e);
+        }
+        if let Some(f) = fullscreen {
             window::raise(f);
         }
         self.update_bar();
+    }
+
+    /// Lleva la ventana a su rectángulo visible `vis`, con animación si está activada.
+    fn move_to(&mut self, h: isize, vis: Rect, enter: Enter) {
+        let to = window::target_rect(h, vis);
+        if matches!(enter, Enter::Snap) {
+            animator::cancel(h);
+            window::apply(&[(h, to)]);
+            return;
+        }
+        let from = match enter {
+            Enter::None => window::current_rect(h).unwrap_or(to),
+            Enter::PopIn => to.scaled(POPIN_SCALE),
+            Enter::Snap => to,
+            Enter::Slide(dx, dy) => Rect::new(to.x + dx, to.y + dy, to.w, to.h),
+        };
+        let dur = self.cfg.general.animation_ms;
+        if from == to {
+            animator::cancel(h);
+            return;
+        }
+        if dur == 0 {
+            animator::cancel(h);
+            window::apply(&[(h, to)]);
+            return;
+        }
+        if !matches!(enter, Enter::None) {
+            window::apply(&[(h, from)]); // primer fotograma ya en pantalla
+        }
+        animator::start(h, Item::new(from, to, dur).delayed(self.next_delay));
+    }
+
+    /// Desplazamiento de entrada para el workspace nuevo de un monitor, si hay un eje libre:
+    /// horizontal si no hay monitores a los lados, vertical si no los hay encima/debajo
+    /// (así las ventanas nunca invaden otra pantalla). `None` -> pop-in.
+    fn slide_offset(&self, mon: usize, forward: bool) -> Option<(i32, i32)> {
+        if self.cfg.general.animation_ms == 0 {
+            return None;
+        }
+        let r = self.mons[mon].rect;
+        let others = || self.mons.iter().enumerate().filter(|&(i, _)| i != mon).map(|(_, m)| m.rect);
+        let sign = if forward { 1 } else { -1 };
+        let side = others().any(|o| o.y < r.bottom() && r.y < o.bottom());
+        let stacked = others().any(|o| o.x < r.right() && r.x < o.right());
+        if !side {
+            Some((sign * r.w, 0))
+        } else if !stacked {
+            Some((0, sign * r.h))
+        } else {
+            None
+        }
+    }
+
+    /// Las ventanas del workspace que se va salen deslizándose y se ocultan al terminar.
+    fn slide_out(&mut self, ws: usize, dx: i32, dy: i32) {
+        let dur = self.cfg.general.animation_ms;
+        for h in self.model.ws[ws].windows.clone() {
+            let Some(cur) = window::current_rect(h) else { continue };
+            let to = Rect::new(cur.x + dx, cur.y + dy, cur.w, cur.h);
+            animator::start(h, Item::new(cur, to, dur).hiding());
+        }
+    }
+
+    fn hide_ws(&mut self, ws: usize) {
+        let list = self.model.ws[ws].windows.clone();
+        for h in &list {
+            animator::cancel(*h);
+        }
+        window::hide(&list);
     }
 
     fn focus_active(&self) {
@@ -151,9 +404,12 @@ impl App {
 
     fn on_event(&mut self, event: u32, h: isize) {
         match event {
-            EVENT_OBJECT_CREATE | EVENT_OBJECT_SHOW | EVENT_SYSTEM_MINIMIZEEND => {
-                if self.track(h) {
-                    self.retile();
+            EVENT_OBJECT_CREATE | EVENT_OBJECT_SHOW | EVENT_SYSTEM_MINIMIZEEND | EVENT_OBJECT_NAMECHANGE => {
+                if let Some(ws) = self.track(h) {
+                    self.retile_ws(ws, Enter::None);
+                    self.schedule_settle();
+                } else if event == EVENT_OBJECT_NAMECHANGE {
+                    self.update_bar();
                 }
             }
             EVENT_OBJECT_DESTROY => self.untrack(h),
@@ -163,103 +419,201 @@ impl App {
                 }
             }
             EVENT_SYSTEM_FOREGROUND => {
-                if self.track(h) {
-                    self.retile();
+                if let Some(ws) = self.track(h) {
+                    self.retile_ws(ws, Enter::None);
+                    self.schedule_settle();
                 }
-                match self.model.find(h) {
-                    Some(ws) if ws != self.model.active => {
-                        // alt-tab hacia una ventana de otro workspace: seguimos al foco
-                        self.model.ws[ws].focused = Some(h);
-                        self.switch_workspace(ws);
+                if let Some(ws) = self.model.find(h) {
+                    self.model.ws[ws].focused = Some(h);
+                    match self.model.visible_on(ws) {
+                        Some(mon) => {
+                            self.model.focused_mon = mon;
+                            self.update_bar();
+                        }
+                        // alt-tab hacia una ventana de un workspace oculto: lo traemos al monitor enfocado
+                        None => self.show_workspace(ws),
                     }
-                    Some(_) => {
-                        self.model.active_mut().focused = Some(h);
-                        self.update_bar();
-                    }
-                    None => {}
                 }
             }
-            EVENT_SYSTEM_MOVESIZEEND => {
-                if self.model.active_ws().windows.contains(&h) {
-                    self.retile();
-                }
-            }
-            EVENT_OBJECT_NAMECHANGE => {
-                if self.track(h) {
-                    self.retile();
-                } else {
-                    self.update_bar();
-                }
-            }
+            EVENT_SYSTEM_MOVESIZEEND => self.on_move_end(h),
             _ => {}
         }
     }
 
+    /// Al soltar una ventana arrastrada: si cayó en otro monitor, pasa al workspace de ese monitor.
+    fn on_move_end(&mut self, h: isize) {
+        let Some(ws) = self.model.find(h) else { return };
+        let Some(mon) = self.model.visible_on(ws) else { return };
+        let Some(cur) = window::current_rect(h) else { return };
+        let (cx, cy) = cur.center();
+        let dest = monitor_at(&self.mon_rects(), cx, cy);
+        if dest != mon {
+            let target = self.model.mon_ws[dest];
+            self.model.remove(h);
+            self.model.add(h, target);
+            self.retile_ws(ws, Enter::None);
+            self.retile_ws(target, Enter::None);
+        } else {
+            self.retile_ws(ws, Enter::None);
+        }
+    }
+
+    /// Muchas apps reajustan su propia posición justo después de abrirse: volvemos a colocar todo
+    /// cuando se calman, en lugar de pelear fotograma a fotograma.
+    fn schedule_settle(&self) {
+        unsafe {
+            SetTimer(Some(bar::hwnd()), bar::TIMER_SETTLE, 250, None);
+        }
+    }
+
     fn untrack(&mut self, h: isize) {
-        let was_focused = self.model.active_ws().focused == Some(h);
-        let Some(ws) = self.model.remove(h) else { return };
+        let Some(ws) = self.model.find(h) else { return };
+        let was_focused = self.model.ws[ws].focused == Some(h);
+        self.model.remove(h);
         self.originals.remove(&h);
-        if ws == self.model.active {
-            self.retile();
-            if was_focused && window::foreground() == h || !window::is_alive(h) && was_focused {
+        self.identities.borrow_mut().remove(&h);
+        animator::cancel(h);
+        if let Some(mon) = self.model.visible_on(ws) {
+            // los vecinos esperan a que termine el fundido de cierre nativo de Windows
+            self.next_delay = CLOSE_DELAY_MS;
+            self.retile_ws(ws, Enter::None);
+            self.next_delay = 0;
+            if was_focused && mon == self.model.focused_mon {
                 self.focus_active();
             }
         }
         self.update_bar();
     }
 
-    fn switch_workspace(&mut self, n: usize) {
-        if n >= self.model.ws.len() || n == self.model.active {
+    /// Super+N: si otro monitor ya muestra ese workspace, el foco va a ese monitor;
+    /// si no, el monitor enfocado pasa a mostrarlo.
+    fn show_workspace(&mut self, n: usize) {
+        if n >= self.model.ws.len() {
             return;
         }
-        window::hide(&self.model.active_ws().windows);
-        self.model.active = n;
-        self.retile();
+        let m = self.model.focused_mon;
+        if let Some(k) = self.model.visible_on(n) {
+            if k != m {
+                self.model.focused_mon = k;
+                self.focus_active();
+                self.update_bar();
+            }
+            return;
+        }
+        let old = self.model.mon_ws[m];
+        match self.slide_offset(m, n > old) {
+            Some((dx, dy)) => {
+                self.slide_out(old, -dx, -dy);
+                self.model.mon_ws[m] = n;
+                self.retile_ws(n, Enter::Slide(dx, dy));
+            }
+            None => {
+                self.hide_ws(old);
+                self.model.mon_ws[m] = n;
+                self.retile_ws(n, Enter::PopIn);
+            }
+        }
         self.focus_active();
         self.update_bar();
     }
 
-    fn move_to_workspace(&mut self, n: usize) {
-        if n >= self.model.ws.len() || n == self.model.active {
+    fn move_focused_to(&mut self, n: usize) {
+        let from = self.model.active();
+        if n >= self.model.ws.len() || n == from {
             return;
         }
         let Some(h) = self.model.active_ws().focus_target() else { return };
         self.model.remove(h);
         self.model.add(h, n);
-        window::hide(&[h]);
-        self.retile();
+        animator::cancel(h);
+        if self.model.visible_on(n).is_some() {
+            self.retile_ws(n, Enter::None);
+        } else {
+            window::hide(&[h]);
+        }
+        self.retile_ws(from, Enter::None);
         self.focus_active();
+        self.update_bar();
+    }
+
+    fn adjacent_monitor(&self, dir: Dir) -> Option<usize> {
+        neighbor(&self.mon_rects(), self.model.focused_mon, dir)
+    }
+
+    fn focused_index(&self) -> Option<usize> {
+        let w = self.model.active_ws();
+        w.focus_target().and_then(|f| w.windows.iter().position(|&x| x == f))
     }
 
     fn focus_dir(&mut self, dir: Dir) {
-        let ws = self.model.active;
+        let ws = self.model.active();
         self.model.active_mut().fullscreen = None;
-        let w = self.model.active_ws();
-        let Some(from) = w.focus_target().and_then(|f| w.windows.iter().position(|&x| x == f)) else { return };
-        if let Some(to) = neighbor(&self.rects(ws), from, dir) {
-            let h = self.model.ws[ws].windows[to];
-            self.model.active_mut().focused = Some(h);
-            self.retile();
-            window::focus(h);
+        if let Some(from) = self.focused_index() {
+            if let Some(to) = neighbor(&self.rects_for(ws, self.model.focused_mon), from, dir) {
+                let h = self.model.ws[ws].windows[to];
+                self.model.active_mut().focused = Some(h);
+                self.retile_ws(ws, Enter::None);
+                window::focus(h);
+                return;
+            }
+        }
+        if let Some(mon) = self.adjacent_monitor(dir) {
+            self.model.focused_mon = mon;
+            self.focus_active();
+            self.update_bar();
         }
     }
 
     fn move_dir(&mut self, dir: Dir) {
-        let ws = self.model.active;
+        let ws = self.model.active();
         self.model.active_mut().fullscreen = None;
-        let w = self.model.active_ws();
-        let Some(from) = w.focus_target().and_then(|f| w.windows.iter().position(|&x| x == f)) else { return };
-        if let Some(to) = neighbor(&self.rects(ws), from, dir) {
+        let Some(from) = self.focused_index() else { return };
+        if let Some(to) = neighbor(&self.rects_for(ws, self.model.focused_mon), from, dir) {
             self.model.active_mut().windows.swap(from, to);
-            self.retile();
+            self.retile_ws(ws, Enter::None);
+        } else if let Some(mon) = self.adjacent_monitor(dir) {
+            // al borde del monitor: la ventana salta al workspace del monitor vecino
+            let target = self.model.mon_ws[mon];
+            self.move_focused_to(target);
+            self.model.focused_mon = mon;
+            self.focus_active();
+            self.update_bar();
         }
     }
 
+    /// Workspace `d` pasos desde el activo (con vuelta), saltando los que otro monitor está mostrando.
+    fn relative_workspace(&self, d: i32) -> Option<usize> {
+        let len = self.model.ws.len() as i32;
+        let from = self.model.active() as i32;
+        (1..len)
+            .map(|k| (from + d * k).rem_euclid(len) as usize)
+            .find(|&n| self.model.visible_on(n).is_none())
+    }
+
+    /// Alt+Tab del mosaico: pasa el foco a la ventana siguiente/anterior del workspace.
+    fn cycle_focus(&mut self, d: i32) {
+        let ws = self.model.active();
+        let Some(from) = self.focused_index() else { return };
+        let n = self.model.ws[ws].windows.len() as i32;
+        if n < 2 {
+            return;
+        }
+        let h = self.model.ws[ws].windows[(from as i32 + d).rem_euclid(n) as usize];
+        let w = self.model.active_mut();
+        w.focused = Some(h);
+        if w.fullscreen.is_some() {
+            w.fullscreen = Some(h);
+        }
+        self.retile_ws(ws, Enter::None);
+        window::focus(h);
+    }
+
     fn toggle_fullscreen(&mut self) {
+        let ws = self.model.active();
         let w = self.model.active_mut();
         let Some(f) = w.focus_target() else { return };
         w.fullscreen = if w.fullscreen == Some(f) { None } else { Some(f) };
-        self.retile();
+        self.retile_ws(ws, Enter::None);
     }
 
     fn run(&mut self, action: Action) {
@@ -272,13 +626,28 @@ impl App {
             }
             Action::Focus(d) => self.focus_dir(d),
             Action::Move(d) => self.move_dir(d),
-            Action::Workspace(n) => self.switch_workspace(n),
-            Action::MoveToWorkspace(n) => self.move_to_workspace(n),
+            Action::Workspace(n) => self.show_workspace(n),
+            Action::MoveToWorkspace(n) => self.move_focused_to(n),
+            Action::WorkspaceRel(d) => {
+                if let Some(n) = self.relative_workspace(d) {
+                    self.show_workspace(n);
+                }
+            }
+            Action::MoveToWorkspaceRel(d) => {
+                if let Some(n) = self.relative_workspace(d) {
+                    self.move_focused_to(n);
+                }
+            }
+            Action::Cycle(d) => self.cycle_focus(d),
+            Action::Launcher => launcher::toggle(self.mons[self.model.focused_mon].rect),
+            Action::Panel => panel::toggle(self.mons[self.model.focused_mon].rect, bar::height_px()),
+            Action::None => {}
             Action::Fullscreen => self.toggle_fullscreen(),
             Action::ToggleLayout => {
+                let ws = self.model.active();
                 let w = self.model.active_mut();
                 w.layout = w.layout.toggled();
-                self.retile();
+                self.retile_ws(ws, Enter::None);
             }
             Action::Quit => unsafe {
                 let _ = PostMessageW(Some(bar::hwnd()), WM_CLOSE, Default::default(), Default::default());
@@ -288,20 +657,54 @@ impl App {
 
     /// Devuelve todas las ventanas a su posición original (o a una visible si esa ya no lo es).
     fn restore_all(&mut self) {
-        let screen = unsafe { Rect::new(0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+        animator::shutdown();
+        let screen = unsafe {
+            Rect::new(
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        };
+        let fallback = self.mons.first().map_or(screen, |m| m.work);
         for (&h, orig) in &self.originals {
             if !window::is_alive(h) {
                 continue;
             }
-            let visible = Rect::new(orig.x + 40, orig.y + 40, (orig.w - 80).max(1), (orig.h - 80).max(1)).intersects(&screen);
+            let visible =
+                Rect::new(orig.x + 40, orig.y + 40, (orig.w - 80).max(1), (orig.h - 80).max(1)).intersects(&screen);
             let target = if visible {
                 *orig
             } else {
-                let (w, hh) = (orig.w.min(self.work.w), orig.h.min(self.work.h));
-                Rect::new(self.work.x + (self.work.w - w) / 2, self.work.y + (self.work.h - hh) / 2, w, hh)
+                let (w, hh) = (orig.w.min(fallback.w), orig.h.min(fallback.h));
+                Rect::new(fallback.x + (fallback.w - w) / 2, fallback.y + (fallback.h - hh) / 2, w, hh)
             };
             window::set_exact(h, target);
         }
+    }
+}
+
+/// Alto que ocupa el dock en cada monitor (0 si está desactivado).
+fn dock_reserve(cfg: &Config) -> i32 {
+    if cfg.dock.enabled {
+        dock::reserve_px(&cfg.dock)
+    } else {
+        0
+    }
+}
+
+/// Con la barra de tareas oculta Windows sigue reservando su hueco en `rcWork`: el área de mosaico
+/// pasa a ser todo el monitor menos nuestra barra superior. El dock reserva su franja inferior en el
+/// de cada monitor gestionado (hay un dock en cada uno).
+fn claim_taskbar_space(mons: &mut [MonitorInfo], hide_taskbar: bool, dock_h: i32) {
+    if hide_taskbar {
+        let bar_h = bar::height_px();
+        for m in mons.iter_mut() {
+            m.work = Rect::new(m.rect.x, m.rect.y + bar_h, m.rect.w, (m.rect.h - bar_h).max(1));
+        }
+    }
+    for m in mons.iter_mut() {
+        m.work.h = (m.work.h - dock_h).max(1);
     }
 }
 
@@ -323,17 +726,4 @@ fn exec(cmd: &str) {
             SW_SHOWNORMAL,
         );
     }
-}
-
-pub fn build(cfg: Config) -> Result<App, String> {
-    let binds = cfg.bindings()?;
-    Ok(App::new(cfg, binds))
-}
-
-pub fn binding_count() -> usize {
-    with(|a| a.binds.len()).unwrap_or(0)
-}
-
-pub fn bindings() -> Vec<Binding> {
-    with(|a| a.binds.clone()).unwrap_or_default()
 }
