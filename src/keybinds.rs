@@ -15,6 +15,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// Mensaje que el hook de teclado envía a la ventana principal: wparam = índice del atajo.
 pub const WM_HOOK_KEY: u32 = WM_APP + 3;
+/// Combinación capturada (modo captura de atajos): wparam = tecla, lparam = modificadores.
+pub const WM_CAPTURE_KEY: u32 = WM_APP + 4;
 
 pub const MOD_ALT: u32 = 0x1;
 pub const MOD_CONTROL: u32 = 0x2;
@@ -51,6 +53,8 @@ pub enum Action {
     Launcher,
     /// Abre o cierra el panel de control (Wi-Fi, sonido, batería).
     Panel,
+    /// Abre o cierra el menú del sistema (atajos, instalar, apps web...).
+    Menu,
     /// No hace nada: solo captura la combinación para que Windows no la reciba.
     None,
 }
@@ -170,6 +174,7 @@ pub fn parse_binding(s: &str) -> Result<Binding, String> {
         "quit" => Action::Quit,
         "launcher" => Action::Launcher,
         "panel" => Action::Panel,
+        "menu" => Action::Menu,
         "none" => Action::None,
         other => return Err(format!("acción desconocida: '{other}'")),
     };
@@ -214,6 +219,8 @@ struct HookState {
     win_used: bool,
     /// Tragar la tecla Win sola (no abrir el menú Inicio).
     block_start: bool,
+    /// Modo captura: cada tecla (con sus modificadores) se entrega a la app en vez de ejecutarse.
+    capture: bool,
 }
 
 impl HookState {
@@ -253,6 +260,18 @@ fn handle(msg: u32, vk: u32) -> (bool, bool) {
                 s.win_used = false;
             }
             return (false, dummy);
+        }
+        if s.capture {
+            if down {
+                let mods = s.mods();
+                if mods & MOD_WIN != 0 {
+                    s.win_used = true;
+                }
+                unsafe {
+                    let _ = PostMessageW(Some(HWND(s.target as *mut _)), WM_CAPTURE_KEY, WPARAM(vk as usize), LPARAM(mods as isize));
+                }
+            }
+            return (true, false);
         }
         if up {
             return match s.swallowed.iter().position(|&k| k == vk) {
@@ -330,8 +349,83 @@ pub fn install_hook(target: HWND, binds: &[Binding], block_start: bool) -> Resul
     }
 }
 
+/// Activa o desactiva el modo captura de atajos del hook.
+pub fn set_capture(on: bool) {
+    HOOK.with(|h| h.borrow_mut().capture = on);
+}
+
+/// Sustituye los atajos con Super atendidos por el hook (tras editar los atajos en vivo).
+pub fn update_hook(binds: &[Binding]) {
+    HOOK.with(|h| {
+        h.borrow_mut().binds = binds
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.mods & MOD_WIN != 0)
+            .map(|(i, b)| (b.mods & !MOD_NOREPEAT, b.vk, i))
+            .collect();
+    });
+}
+
 pub fn remove_hook(hook: HHOOK) {
     unsafe {
         let _ = UnhookWindowsHookEx(hook);
+    }
+}
+
+/// Texto de una combinación ("Super+Shift+Left"); `None` si la tecla no se puede usar en un atajo.
+pub fn format_keys(mods: u32, vk: u32) -> Option<String> {
+    let key = match vk {
+        0x0D => "Return".to_string(),
+        0x20 => "Space".to_string(),
+        0x09 => "Tab".to_string(),
+        0x1B => "Escape".to_string(),
+        0x25 => "Left".to_string(),
+        0x26 => "Up".to_string(),
+        0x27 => "Right".to_string(),
+        0x28 => "Down".to_string(),
+        0x70..=0x7B => format!("F{}", vk - 0x70 + 1),
+        0x30..=0x39 | 0x41..=0x5A => (vk as u8 as char).to_string(),
+        _ => return None,
+    };
+    let mut parts = Vec::new();
+    for (bit, name) in [(MOD_WIN, "Super"), (MOD_CONTROL, "Ctrl"), (MOD_ALT, "Alt"), (MOD_SHIFT, "Shift")] {
+        if mods & bit != 0 {
+            parts.push(name);
+        }
+    }
+    parts.push(&key);
+    Some(parts.join("+"))
+}
+
+fn dir_name(d: Dir) -> &'static str {
+    match d {
+        Dir::Left => "a la izquierda",
+        Dir::Right => "a la derecha",
+        Dir::Up => "hacia arriba",
+        Dir::Down => "hacia abajo",
+    }
+}
+
+/// Descripción en español de lo que hace un atajo.
+pub fn describe(a: &Action) -> String {
+    match a {
+        Action::Exec(c) => format!("Abrir {c}"),
+        Action::Close => "Cerrar la ventana".into(),
+        Action::Focus(d) => format!("Enfocar {}", dir_name(*d)),
+        Action::Move(d) => format!("Mover la ventana {}", dir_name(*d)),
+        Action::Workspace(n) => format!("Ir al escritorio {}", n + 1),
+        Action::MoveToWorkspace(n) => format!("Llevar la ventana al escritorio {}", n + 1),
+        Action::WorkspaceRel(d) => if *d > 0 { "Escritorio siguiente" } else { "Escritorio anterior" }.into(),
+        Action::MoveToWorkspaceRel(d) => {
+            if *d > 0 { "Llevar la ventana al siguiente escritorio" } else { "Llevar la ventana al escritorio anterior" }.into()
+        }
+        Action::Cycle(d) => if *d > 0 { "Ventana siguiente" } else { "Ventana anterior" }.into(),
+        Action::Fullscreen => "Pantalla completa".into(),
+        Action::ToggleLayout => "Cambiar de layout".into(),
+        Action::Launcher => "Buscar aplicaciones".into(),
+        Action::Panel => "Panel de control".into(),
+        Action::Menu => "Menú".into(),
+        Action::Quit => "Salir de hypr-win".into(),
+        Action::None => "Bloquear un atajo de Windows".into(),
     }
 }

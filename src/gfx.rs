@@ -121,11 +121,16 @@ pub struct Font {
 impl Font {
     /// Crea la fuente `name` (con respaldo a Segoe UI) de `size` px.
     pub fn new(name: &str, size: f32, bold: bool) -> Option<Font> {
+        Self::with_fallbacks(&[name, "Segoe UI"], size, bold)
+    }
+
+    /// Primera de las familias de `names` que exista en el sistema.
+    pub fn with_fallbacks(names: &[&str], size: f32, bold: bool) -> Option<Font> {
         start();
         unsafe {
-            for candidate in [name, "Segoe UI"] {
+            for candidate in names {
                 let mut family = null_mut();
-                let n = HSTRING::from(candidate);
+                let n = HSTRING::from(*candidate);
                 if GdipCreateFontFamilyFromName(PCWSTR(n.as_ptr()), null_mut(), &mut family) != Status(0) {
                     continue;
                 }

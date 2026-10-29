@@ -21,6 +21,7 @@ fn load_config() -> Result<Config, String> {
     match find_config() {
         Some(path) => {
             println!("config: {}", path.display());
+            hypr_win::config::set_path(std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()));
             let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
         }

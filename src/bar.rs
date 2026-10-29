@@ -103,6 +103,11 @@ pub fn render(c: &mut Canvas, th: &Theme, font: &Font, opacity: u8, v: &BarView)
     if let Some(lit) = v.status.wifi_lit() {
         x -= icon;
         glyphs::wifi(c, x, iy, icon, lit, !v.status.wifi.enabled, th.fg);
+        x -= px(16.0);
+    }
+    if v.status.bluetooth.present {
+        x -= icon * 0.8;
+        glyphs::bluetooth(c, x, iy, icon, th.fg, if v.status.bluetooth.on { 255 } else { 80 });
     }
     let cluster = (x - px(8.0), cluster_end);
 
@@ -420,6 +425,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_HOTKEY => {
             crate::app::on_hotkey(wp.0 as i32 - 1);
+            LRESULT(0)
+        }
+        crate::keybinds::WM_CAPTURE_KEY => {
+            crate::palette::on_capture(wp.0 as u32, lp.0 as u32);
             LRESULT(0)
         }
         crate::keybinds::WM_HOOK_KEY => {

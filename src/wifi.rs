@@ -45,13 +45,32 @@ pub struct Status {
     pub present: bool,
     /// La radio está encendida.
     pub enabled: bool,
+    /// El adaptador está conectado a una red (lo informa Windows aunque oculte el nombre).
+    pub connected: bool,
     pub ssid: Option<String>,
     pub signal: u32,
+    /// Windows rechaza dar nombres de red y señal: desde Windows 11 24H2 exige permiso de ubicación.
+    pub denied: bool,
 }
+
+/// Resultado de listar las redes visibles.
+#[derive(Clone, Debug, Default)]
+pub struct Scan {
+    pub networks: Vec<Network>,
+    /// ERROR_ACCESS_DENIED: falta el permiso de ubicación para ver las redes.
+    pub denied: bool,
+}
+
+/// ERROR_ACCESS_DENIED
+const ACCESS_DENIED: u32 = 5;
+/// WLAN_INTERFACE_STATE: wlan_interface_state_connected
+const STATE_CONNECTED: i32 = 1;
 
 struct Client {
     handle: HANDLE,
     guid: GUID,
+    /// Estado del adaptador (WLAN_INTERFACE_STATE).
+    state: i32,
 }
 
 impl Client {
@@ -65,14 +84,22 @@ impl Client {
             let mut list: *mut WLAN_INTERFACE_INFO_LIST = null_mut();
             let found = if WlanEnumInterfaces(handle, None, &mut list) == 0 && !list.is_null() {
                 let l = &*list;
-                let g = (l.dwNumberOfItems > 0).then(|| l.InterfaceInfo[0].InterfaceGuid);
+                let items = std::slice::from_raw_parts(l.InterfaceInfo.as_ptr(), l.dwNumberOfItems as usize);
+                // hay adaptadores virtuales (Wi-Fi Direct...): preferimos el conectado y el real
+                let virtual_adapter = |i: &windows::Win32::NetworkManagement::WiFi::WLAN_INTERFACE_INFO| {
+                    let end = i.strInterfaceDescription.iter().position(|&c| c == 0).unwrap_or(0);
+                    let d = String::from_utf16_lossy(&i.strInterfaceDescription[..end]).to_lowercase();
+                    d.contains("virtual") || d.contains("direct")
+                };
+                let pick = items.iter().max_by_key(|i| (i.isState.0 == STATE_CONNECTED, !virtual_adapter(i)));
+                let r = pick.map(|i| (i.InterfaceGuid, i.isState.0));
                 WlanFreeMemory(list as *const c_void);
-                g
+                r
             } else {
                 None
             };
             match found {
-                Some(guid) => Some(Client { handle, guid }),
+                Some((guid, state)) => Some(Client { handle, guid, state }),
                 None => {
                     WlanCloseHandle(handle, None);
                     None
@@ -96,18 +123,24 @@ fn ssid_string(len: u32, bytes: &[u8]) -> String {
 
 pub fn status() -> Status {
     let Some(c) = Client::open() else { return Status::default() };
-    let mut st = Status { present: true, enabled: radio_on(&c).unwrap_or(true), ..Default::default() };
+    let mut st = Status {
+        present: true,
+        enabled: radio_on(&c).unwrap_or(true),
+        connected: c.state == STATE_CONNECTED,
+        ..Default::default()
+    };
     unsafe {
         let mut size = 0u32;
         let mut data: *mut c_void = null_mut();
-        if WlanQueryInterface(c.handle, &c.guid, wlan_intf_opcode_current_connection, None, &mut size, &mut data, None) == 0
-            && !data.is_null()
-        {
+        let r = WlanQueryInterface(c.handle, &c.guid, wlan_intf_opcode_current_connection, None, &mut size, &mut data, None);
+        if r == 0 && !data.is_null() {
             let a = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
             let assoc = &a.wlanAssociationAttributes;
             st.ssid = Some(ssid_string(assoc.dot11Ssid.uSSIDLength, &assoc.dot11Ssid.ucSSID));
             st.signal = assoc.wlanSignalQuality;
             WlanFreeMemory(data);
+        } else if r == ACCESS_DENIED {
+            st.denied = true;
         }
     }
     st
@@ -130,13 +163,14 @@ fn radio_on(c: &Client) -> Option<bool> {
 }
 
 /// Redes visibles, una por SSID (la de mejor señal): la conectada primero, luego por señal.
-pub fn networks() -> Vec<Network> {
-    let Some(c) = Client::open() else { return Vec::new() };
+pub fn networks() -> Scan {
+    let Some(c) = Client::open() else { return Scan::default() };
     let mut out: Vec<Network> = Vec::new();
     unsafe {
         let mut list: *mut WLAN_AVAILABLE_NETWORK_LIST = null_mut();
-        if WlanGetAvailableNetworkList(c.handle, &c.guid, 0, None, &mut list) != 0 || list.is_null() {
-            return out;
+        let r = WlanGetAvailableNetworkList(c.handle, &c.guid, 0, None, &mut list);
+        if r != 0 || list.is_null() {
+            return Scan { networks: out, denied: r == ACCESS_DENIED };
         }
         let l = &*list;
         let items = std::slice::from_raw_parts(l.Network.as_ptr(), l.dwNumberOfItems as usize);
@@ -162,7 +196,7 @@ pub fn networks() -> Vec<Network> {
         WlanFreeMemory(list as *const c_void);
     }
     out.sort_by(|a, b| b.connected.cmp(&a.connected).then(b.signal.cmp(&a.signal)));
-    out
+    Scan { networks: out, denied: false }
 }
 
 /// DOT11_AUTH_ALGORITHM -> tipo de autenticación soportado.

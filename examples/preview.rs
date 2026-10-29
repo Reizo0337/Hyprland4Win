@@ -14,7 +14,7 @@ use hypr_win::panel::Mode;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use hypr_win::config::Config;
 use hypr_win::gfx::{Canvas, Font, Theme};
-use hypr_win::launcher::{self, Fonts, View};
+use hypr_win::palette::{self, Fonts, Row, RowIcon, View as PView};
 
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xffff_ffffu32;
@@ -118,9 +118,10 @@ fn main() {
 
     // estado de ejemplo
     let status = Status {
-        wifi: wifi::Status { present: true, enabled: true, ssid: Some("Casa".into()), signal: 88 },
+        wifi: wifi::Status { present: true, enabled: true, connected: true, ssid: Some("Casa".into()), signal: 88, denied: false },
         volume: Some(Volume { level: 0.6, muted: false }),
         battery: Some(Battery { percent: 21, charging: true, ac: true }),
+        bluetooth: hypr_win::bluetooth::Status { present: true, on: true, connected: vec!["AirPods Pro".into(), "Teclado MX".into()] },
     };
 
     // barra
@@ -132,16 +133,87 @@ fn main() {
     bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &view);
     save(&canvas, &format!("{dir}/bar{suffix}.png"));
 
-    // lanzador
-    let fonts = Fonts::new(&theme).unwrap();
-    let names = ["Administrador de tareas", "Calculadora", "Configuración", "Google Chrome", "Microsoft Edge", "Terminal de Windows", "Visual Studio Code", "Windows PowerShell"];
-    {
-        let (w, h) = launcher::canvas_size(names.len());
-        let mut c = Canvas::new(w, h).unwrap();
-        let view = View { query: "", names: &names, sel: 1, top: 0, indexing: false };
-        launcher::render(&mut c, &theme, &fonts, &view);
-        save(&c, &format!("{dir}/launcher{suffix}.png"));
+    // paleta (Win+K y menú Win+Espacio)
+    apps::start_indexing();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while apps::entries().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    let entries = apps::entries();
+    let all_names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+    let pal_fonts = Fonts::new(&theme).unwrap();
+    let save_palette = |file: &str, crumb: &str, placeholder: &str, query: &str, rows: &[Row], show_list: bool, sel: usize| {
+        let icons_store: Vec<Option<icons::Icon>> =
+            rows
+            .iter()
+            .map(|r| match &r.icon {
+                RowIcon::App(id) => icons::from_apps_folder(id),
+                RowIcon::Favicon(h) => hypr_win::webapp::cached_favicon(h).and_then(|p| icons::from_image_file(&p.to_string_lossy())),
+                _ => None,
+            })
+            .collect();
+        let icons: Vec<Option<&icons::Icon>> = icons_store.iter().map(|i| i.as_ref()).collect();
+        let view = PView { crumb, placeholder, query, rows, icons: &icons, sel, top: 0, show_list, empty_msg: "Sin resultados" };
+        let (w, h) = palette::canvas_size(&view);
+        let mut c = Canvas::new(w, h).unwrap();
+        palette::render(&mut c, &theme, &pal_fonts, &view);
+        save(&c, &format!("{dir}/{file}{suffix}.png"));
+    };
+    // Spotlight: solo la barra, y con una consulta
+    save_palette("spot-empty", "", "Buscar aplicaciones", "", &[], false, 0);
+    let ranked: Vec<usize> = search::rank("e", &all_names, 6);
+    let rows: Vec<Row> = ranked
+        .iter()
+        .enumerate()
+        .map(|(i, &k)| {
+            Row::new(entries[k].name.clone()).hint("Aplicación").icon(RowIcon::App(entries[k].id.clone())).section(if i == 0 { "Mejor resultado" } else { "Aplicaciones" })
+        })
+        .collect();
+    save_palette("spot-query", "", "Buscar aplicaciones", "e", &rows, true, 0);
+    // Menú: raíz, instalar, apps web, atajos y captura
+    let g = |t: &str, s: &str, ch: char, rgb: u32| Row::new(t).subtitle(s).glyph(ch, rgb);
+    let root = vec![
+        g("Aplicaciones", "Buscar y abrir una aplicación", '\u{E71D}', 0x0A84FF).hint("›"),
+        g("Instalar", "Programas con winget", '\u{E896}', 0x30D158).hint("›"),
+        g("Aplicaciones web", "Convierte una página en una aplicación", '\u{E774}', 0xFF9F0A).hint("›"),
+        g("Atajos", "Personaliza los atajos de teclado", '\u{E765}', 0xBF5AF2).hint("›"),
+        g("Panel de control", "Wi-Fi, Bluetooth y sonido", '\u{E713}', 0x8E8E93),
+        g("Sistema", "Bloquear, suspender, reiniciar…", '\u{E7E8}', 0xFF453A).hint("›"),
+    ];
+    save_palette("menu-root", "", "Buscar en el menú", "", &root, true, 1);
+    let mut install = vec![g("Instalar «vlc» con winget", "winget install (se abre una consola)", '\u{E896}', 0x30D158).hint("Consola").section("Tu búsqueda")];
+    for p in hypr_win::packages::CURATED.iter().take(6) {
+        install.push(Row::new(p.name).subtitle(p.id).hint("Instalar").icon(RowIcon::Favicon(p.site.to_string())).section(p.section));
+    }
+    save_palette("menu-install", "Instalar", "Buscar o instalar un programa", "", &install, true, 1);
+    // todos los favicons de la lista (comprobación de que cada dominio devuelve algo)
+    for p in hypr_win::packages::CURATED {
+        let ok = hypr_win::webapp::cached_favicon(p.site).is_some();
+        println!("favicon {:<22} {:<26} {}", p.name, p.site, if ok { "ok" } else { "NO" });
+    }
+    let webs = vec![
+        Row::new("YouTube").hint("Abrir").section("Mis aplicaciones web"),
+        g("Nueva aplicación web…", "Nombre y dirección", '\u{E710}', 0x0A84FF).section("Crear"),
+        g("Spotify", "open.spotify.com", '\u{E774}', 0xFF9F0A).hint("Crear").section("Sugeridas"),
+        g("Classroom", "classroom.google.com", '\u{E774}', 0xFF9F0A).hint("Crear").section("Sugeridas"),
+    ];
+    save_palette("menu-web", "Apps web", "Aplicaciones web", "", &webs, true, 2);
+    let keys = vec![
+        g("Abrir wt.exe", "Super+Return", '\u{E765}', 0x8E8E93).hint("Cambiar"),
+        g("Cerrar la ventana", "Super+Q", '\u{E765}', 0x8E8E93).hint("Cambiar"),
+        g("Pantalla completa", "Super+F", '\u{E765}', 0x8E8E93).hint("Cambiar"),
+        g("Menú", "Super+Space", '\u{E765}', 0x8E8E93).hint("Cambiar"),
+    ];
+    save_palette("menu-keys", "Atajos", "Buscar un atajo", "", &keys, true, 1);
+    save_palette(
+        "menu-capture",
+        "Atajo",
+        "Pulsa la nueva combinación…",
+        "",
+        &[g("Pulsa la combinación para «Cerrar la ventana»", "Esc para cancelar", '\u{E765}', 0xBF5AF2)],
+        true,
+        0,
+    );
 
     // panel de control: principal y contraseña
     let pf = panel::Fonts::new(&theme).unwrap();
@@ -157,14 +229,18 @@ fn main() {
         save(&c, &format!("{dir}/{file}{suffix}.png"));
     }
 
-    // dock con iconos reales del sistema
-    apps::start_indexing();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while apps::entries().is_empty() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    // panel cuando Windows oculta las redes (sin permiso de ubicación)
+    {
+        let mut denied = status.clone();
+        denied.wifi = wifi::Status { present: true, enabled: true, connected: true, ssid: None, signal: 0, denied: true };
+        let view = panel::View { status: &denied, networks: &[], device: "Altavoces (Realtek Audio)", mode: &Mode::Main, message: "", scanning: false };
+        let (w, h) = panel::canvas_size(&view);
+        let mut c = Canvas::new(w, h).unwrap();
+        panel::render(&mut c, &theme, &pf, &view);
+        save(&c, &format!("{dir}/panel-denied{suffix}.png"));
     }
-    let entries = apps::entries();
-    let all_names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+
+    // dock con iconos reales del sistema
     let mut shown: Vec<(String, Option<icons::Icon>, bool)> = Vec::new();
     for q in cfg.dock.pinned.iter().map(String::as_str).chain(["Visual Studio Code", "Notepad"]) {
         if let Some(&i) = search::rank(q, &all_names, 1).first() {

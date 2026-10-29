@@ -7,6 +7,49 @@ use crate::layout::LayoutKind;
 
 const DEFAULT_TOML: &str = include_str!("../config.toml");
 
+static PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Recuerda el archivo de configuración cargado (para poder editarlo desde el menú).
+pub fn set_path(p: std::path::PathBuf) {
+    let _ = PATH.set(p);
+}
+
+/// Archivo de configuración en uso, si se cargó uno.
+pub fn path() -> Option<std::path::PathBuf> {
+    PATH.get().cloned()
+}
+
+/// Sustituye el atajo `old` por `new` en el texto de `config.toml` (ambos tal como aparecen entre comillas).
+pub fn replace_bind(text: &str, old: &str, new: &str) -> Result<String, String> {
+    let needle = format!("\"{old}\"");
+    match text.matches(&needle).count() {
+        1 => Ok(text.replacen(&needle, &format!("\"{new}\""), 1)),
+        0 => Err("no se encontró el atajo en config.toml (edítalo a mano)".into()),
+        _ => Err("el atajo aparece varias veces en config.toml (edítalo a mano)".into()),
+    }
+}
+
+/// Aplica el cambio de un atajo en el archivo de configuración. Si no había archivo, crea
+/// `config.toml` junto al ejecutable a partir de los valores por defecto.
+pub fn save_bind_change(old: &str, new: &str) -> Result<(), String> {
+    let path = match path() {
+        Some(p) => p,
+        None => {
+            let p = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("sin carpeta")?.join("config.toml");
+            if !p.is_file() {
+                std::fs::write(&p, DEFAULT_TOML).map_err(|e| e.to_string())?;
+            }
+            let _ = PATH.set(p.clone());
+            p
+        }
+    };
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let updated = replace_bind(&text, old, new)?;
+    // no se guarda nada que no se pueda volver a cargar
+    Config::parse(&updated).map_err(|e| format!("el resultado no sería válido: {e}"))?;
+    std::fs::write(&path, updated).map_err(|e| e.to_string())
+}
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct General {
@@ -87,16 +130,19 @@ pub struct Dock {
     pub pinned: Vec<String>,
     /// Mostrar también las apps abiertas que no están fijadas.
     pub show_running: bool,
+    /// Se oculta cuando hay ventanas en el monitor y aparece al dejar el ratón en el borde inferior.
+    pub autohide: bool,
 }
 
 impl Default for Dock {
     fn default() -> Self {
         Self {
             enabled: true,
-            icon_size: 48,
-            magnification: 1.7,
+            icon_size: 36,
+            magnification: 1.5,
             pinned: ["Explorador", "Edge", "Terminal", "Configuración", "Calculadora"].map(String::from).to_vec(),
             show_running: true,
+            autohide: true,
         }
     }
 }

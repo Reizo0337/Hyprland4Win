@@ -26,6 +26,12 @@ const TIMER_ANIM: usize = 1;
 /// Cuántos iconos a cada lado del cursor se magnifican.
 const SPREAD: f32 = 2.6;
 const BOUNCE_SECS: f32 = 1.1;
+const TIMER_EDGE: usize = 2;
+/// Tiempo con el ratón en el borde inferior para que aparezca el dock (ms).
+const DWELL_MS: u32 = 400;
+/// Tiempo con el ratón fuera del dock para que se vuelva a ocultar (ms).
+const LEAVE_MS: u32 = 600;
+const EDGE_POLL_MS: u32 = 50;
 /// WM_MOUSELEAVE (viene de TrackMouseEvent).
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -82,6 +88,25 @@ pub fn bounce_offset(t: f32, size: f32) -> f32 {
     size * 0.5 * (std::f32::consts::PI * k * 3.0).sin().abs() * (1.0 - k)
 }
 
+/// Un paso (cada `EDGE_POLL_MS`) de la máquina de estados del auto-ocultado: con el dock oculto, hay que
+/// permanecer `DWELL_MS` en el borde inferior para mostrarlo; con el dock mostrado, hay que estar
+/// `LEAVE_MS` fuera de él para ocultarlo. Devuelve (mostrado, tiempo en el borde, tiempo fuera).
+pub fn edge_step(revealed: bool, dwell: u32, leave: u32, at_edge: bool, over_dock: bool) -> (bool, u32, u32) {
+    if !revealed {
+        let dwell = if at_edge { dwell + EDGE_POLL_MS } else { 0 };
+        if dwell >= DWELL_MS {
+            return (true, 0, 0);
+        }
+        (false, dwell, 0)
+    } else {
+        let leave = if over_dock || at_edge { 0 } else { leave + EDGE_POLL_MS };
+        if leave >= LEAVE_MS {
+            return (false, 0, 0);
+        }
+        (true, 0, leave)
+    }
+}
+
 /// Índice del slot (no separador) bajo la coordenada `x` relativa al centro.
 pub fn slot_at(slots: &[Slot], x: f32) -> Option<usize> {
     slots.iter().position(|s| !s.separator && x >= s.left && x < s.left + s.width)
@@ -101,10 +126,10 @@ impl Metrics {
     pub fn new(cfg: &DockCfg) -> Metrics {
         Metrics {
             size: px(cfg.icon_size as f32),
-            gap: px(10.0),
-            pad_x: px(12.0),
-            pad_y: px(8.0),
-            margin: px(8.0),
+            gap: px(8.0),
+            pad_x: px(10.0),
+            pad_y: px(6.0),
+            margin: px(6.0),
             mag: cfg.magnification,
         }
     }
@@ -128,8 +153,13 @@ impl Metrics {
     }
 }
 
+/// Con auto-ocultado el dock no reserva espacio: aparece por encima de las ventanas.
 pub fn reserve_px(cfg: &DockCfg) -> i32 {
-    Metrics::new(cfg).reserve().ceil() as i32
+    if cfg.autohide {
+        0
+    } else {
+        Metrics::new(cfg).reserve().ceil() as i32
+    }
 }
 
 pub struct ItemView<'a> {
@@ -163,7 +193,7 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, m: &Metrics, items: &[ItemV
 
     let pill_h = m.pill_h();
     let pill = FRect::new(center - total / 2.0 - m.pad_x, c.h as f32 - m.margin - pill_h, total + 2.0 * m.pad_x, pill_h);
-    c.card(pill, px(22.0), th.bg, 0xB4, th.fg);
+    c.card(pill, px(18.0), th.bg, 0xB4, th.fg);
 
     let baseline = pill.y + pill_h - m.pad_y;
     let hovered = cursor.filter(|_| amount > 0.3).and_then(|x| slot_at(&slots, x - center));
@@ -231,6 +261,17 @@ struct Win {
     target: f32,
     tracking: bool,
     timer_on: bool,
+    /// Visibilidad animada (0 = oculto, 1 = visible) y su destino.
+    shown: f32,
+    show_target: f32,
+    /// La ventana está realmente mostrada en pantalla.
+    visible: bool,
+    /// Hay ventanas gestionadas en este monitor.
+    busy: bool,
+    /// Mostrado a petición (ratón en el borde) aunque haya ventanas.
+    revealed: bool,
+    dwell_ms: u32,
+    leave_ms: u32,
 }
 
 struct Dock {
@@ -243,6 +284,7 @@ struct Dock {
     icons: HashMap<String, Option<Icon>>,
     running: Vec<Running>,
     pinned_ready: bool,
+    autohide: bool,
     wins: Vec<Win>,
 }
 
@@ -299,6 +341,13 @@ pub fn create(bar_cfg: &Bar, cfg: &DockCfg, mons: &[Rect]) -> Result<(), String>
                 target: 0.0,
                 tracking: false,
                 timer_on: false,
+                shown: 1.0,
+                show_target: 1.0,
+                visible: false,
+                busy: false,
+                revealed: false,
+                dwell_ms: 0,
+                leave_ms: 0,
             });
         }
     }
@@ -313,15 +362,18 @@ pub fn create(bar_cfg: &Bar, cfg: &DockCfg, mons: &[Rect]) -> Result<(), String>
             icons: HashMap::new(),
             running: Vec::new(),
             pinned_ready: false,
+            autohide: cfg.autohide,
             wins,
         })
     });
     let _ = with(|d| {
         d.rebuild();
         d.redraw();
-        for w in &d.wins {
-            unsafe {
-                let _ = ShowWindow(w.hwnd, SW_SHOWNOACTIVATE);
+        if d.autohide {
+            for w in &d.wins {
+                unsafe {
+                    SetTimer(Some(w.hwnd), TIMER_EDGE, EDGE_POLL_MS, None);
+                }
             }
         }
     });
@@ -335,6 +387,23 @@ pub fn update(running: Vec<Running>) {
             d.running = running;
             d.rebuild();
             d.redraw();
+        }
+    });
+}
+
+/// Indica qué monitores tienen ventanas (`busy[i]` para el monitor `i`). Con auto-ocultado, el dock
+/// se esconde donde hay ventanas y se muestra donde no.
+pub fn set_busy(busy: &[bool]) {
+    let _ = with(|d| {
+        if !d.autohide {
+            return;
+        }
+        for wi in 0..d.wins.len() {
+            let b = busy.get(wi).copied().unwrap_or(false);
+            if d.wins[wi].busy != b {
+                d.wins[wi].busy = b;
+                d.retarget(wi);
+            }
         }
     });
 }
@@ -450,7 +519,7 @@ impl Dock {
 
     fn animating(&self, wi: usize) -> bool {
         let w = &self.wins[wi];
-        (w.amount - w.target).abs() > 0.01 || self.bouncing()
+        (w.amount - w.target).abs() > 0.01 || (w.shown - w.show_target).abs() > 0.01 || self.bouncing()
     }
 
     fn redraw(&mut self) {
@@ -462,6 +531,15 @@ impl Dock {
     fn redraw_win(&mut self, wi: usize) {
         let Dock { items, icons, theme, fonts, metrics, wins, .. } = self;
         let win = &mut wins[wi];
+        if win.shown <= 0.005 {
+            if win.visible {
+                win.visible = false;
+                unsafe {
+                    let _ = ShowWindow(win.hwnd, SW_HIDE);
+                }
+            }
+            return;
+        }
         let icons_n = items.iter().filter(|i| !i.separator).count();
         let (w, h) = metrics.canvas_size(icons_n, items.len() - icons_n);
         let w = w.min(win.mon.w);
@@ -480,9 +558,17 @@ impl Dock {
             })
             .collect();
         win.zones = render(canvas, theme, fonts, metrics, &views, win.cursor, win.amount);
+        // sale deslizándose hacia abajo (curva cúbica de salida)
+        let eased = 1.0 - (1.0 - win.shown).powi(3);
         let x = win.mon.x + (win.mon.w - w) / 2;
-        let y = win.mon.y + win.mon.h - h;
+        let y = win.mon.y + win.mon.h - h + ((1.0 - eased) * h as f32) as i32;
         canvas.present(win.hwnd, Some((x, y)));
+        if !win.visible {
+            win.visible = true;
+            unsafe {
+                let _ = ShowWindow(win.hwnd, SW_SHOWNOACTIVATE);
+            }
+        }
     }
 
     fn ensure_timer(&mut self, wi: usize) {
@@ -501,6 +587,10 @@ impl Dock {
         if (w.amount - w.target).abs() <= 0.01 {
             w.amount = w.target;
         }
+        w.shown += (w.show_target - w.shown) * 0.22;
+        if (w.shown - w.show_target).abs() <= 0.01 {
+            w.shown = w.show_target;
+        }
         self.redraw_win(wi);
         if !self.animating(wi) {
             let w = &mut self.wins[wi];
@@ -509,6 +599,36 @@ impl Dock {
                 let _ = KillTimer(Some(w.hwnd), TIMER_ANIM);
             }
         }
+    }
+
+    /// Recalcula si el dock debe estar visible y arranca la animación.
+    fn retarget(&mut self, wi: usize) {
+        let w = &mut self.wins[wi];
+        let target = if !self.autohide || !w.busy || w.revealed { 1.0 } else { 0.0 };
+        if (w.show_target - target).abs() > 0.01 {
+            w.show_target = target;
+            self.ensure_timer(wi);
+        }
+    }
+
+    /// Detecta (cada 50 ms) si el ratón se queda en el borde inferior (mostrar) o se aleja (ocultar).
+    fn edge_tick(&mut self, wi: usize) {
+        let Some((cx, cy)) = crate::window::cursor_pos() else { return };
+        let (cx, cy) = (cx as f32, cy as f32);
+        let pill_zone = self.metrics.pill_h() + self.metrics.margin + px(30.0);
+        let w = &mut self.wins[wi];
+        if !w.busy {
+            if w.revealed {
+                w.revealed = false;
+            }
+            return;
+        }
+        let (mx, my, mw, mh) = (w.mon.x as f32, w.mon.y as f32, w.mon.w as f32, w.mon.h as f32);
+        let at_edge = cx >= mx && cx < mx + mw && cy >= my + mh - px(3.0) && cy < my + mh + px(3.0);
+        let canvas_w = w.canvas.as_ref().map_or(mw, |c| c.w as f32);
+        let over_dock = cx >= mx + (mw - canvas_w) / 2.0 && cx <= mx + (mw + canvas_w) / 2.0 && cy >= my + mh - pill_zone;
+        (w.revealed, w.dwell_ms, w.leave_ms) = edge_step(w.revealed, w.dwell_ms, w.leave_ms, at_edge, over_dock);
+        self.retarget(wi);
     }
 
     fn win_index(&self, hwnd: HWND) -> Option<usize> {
@@ -594,9 +714,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_TIMER => {
+            let id = wp.0;
             let _ = with(|d| {
                 if let Some(wi) = d.win_index(hwnd) {
-                    d.tick(wi);
+                    if id == TIMER_EDGE {
+                        d.edge_tick(wi);
+                    } else {
+                        d.tick(wi);
+                    }
                 }
             });
             LRESULT(0)
@@ -645,6 +770,31 @@ mod tests {
         let sep_mid = slots[1].left + slots[1].width / 2.0;
         assert_eq!(slot_at(&slots, sep_mid), None);
         assert_eq!(slot_at(&slots, slots[0].left + 1.0), Some(0));
+    }
+
+    #[test]
+    fn edge_requires_dwell_to_show_and_leave_to_hide() {
+        // oculto: pasar un instante por el borde no basta
+        let (mut shown, mut dwell, mut leave) = (false, 0, 0);
+        (shown, dwell, leave) = edge_step(shown, dwell, leave, true, false);
+        assert!(!shown);
+        (shown, dwell, leave) = edge_step(shown, dwell, leave, false, false); // se aleja: reinicia
+        assert_eq!((shown, dwell), (false, 0));
+        // permanencia suficiente: aparece
+        for _ in 0..(DWELL_MS / EDGE_POLL_MS) {
+            (shown, dwell, leave) = edge_step(shown, dwell, leave, true, false);
+        }
+        assert!(shown);
+        // mostrado: moverse sobre el dock no lo oculta; alejarse el tiempo suficiente sí
+        for _ in 0..50 {
+            (shown, dwell, leave) = edge_step(shown, dwell, leave, false, true);
+        }
+        assert!(shown);
+        for _ in 0..(LEAVE_MS / EDGE_POLL_MS) {
+            (shown, dwell, leave) = edge_step(shown, dwell, leave, false, false);
+        }
+        assert!(!shown);
+        let _ = (dwell, leave);
     }
 
     #[test]

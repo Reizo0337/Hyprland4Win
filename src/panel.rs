@@ -10,13 +10,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::apps;
+use crate::bluetooth;
 use crate::audio::{self, Volume};
 use crate::bar;
 use crate::config::Bar;
 use crate::gfx::{argb, px, Align, Canvas, FRect, Font, Theme};
 use crate::glyphs;
 use crate::layout::Rect;
-use crate::status::{lit_from_signal, Status};
+use crate::status::{self, lit_from_signal, Status};
 use crate::wifi::{self, Auth, Network};
 use crate::window;
 
@@ -27,6 +28,7 @@ const MAX_NETWORKS: usize = 5;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
     WifiToggle,
+    BluetoothToggle,
     Network(usize),
     Mute,
     Slider,
@@ -75,8 +77,11 @@ pub struct View<'a> {
 enum Block {
     WifiHeader,
     Networks(usize),
+    /// Aviso: Windows oculta las redes sin permiso de ubicación.
+    Notice,
     Message,
     Divider,
+    BluetoothHeader,
     SoundTitle,
     SoundRow,
     Battery,
@@ -92,8 +97,10 @@ impl Block {
         match self {
             Block::WifiHeader => 56.0,
             Block::Networks(n) => n as f32 * 40.0,
+            Block::Notice => 96.0,
             Block::Message => 28.0,
             Block::Divider => 17.0,
+            Block::BluetoothHeader => 56.0,
             Block::SoundTitle => 28.0,
             Block::SoundRow => 44.0,
             Block::Battery => 44.0,
@@ -111,12 +118,12 @@ fn blocks(v: &View) -> Vec<Block> {
         Mode::Main => {
             b.push(Block::WifiHeader);
             if v.status.wifi.present && v.status.wifi.enabled {
-                b.push(Block::Networks(v.networks.len().clamp(1, MAX_NETWORKS)));
+                b.push(if v.status.wifi.denied { Block::Notice } else { Block::Networks(v.networks.len().clamp(1, MAX_NETWORKS)) });
             }
             if !v.message.is_empty() {
                 b.push(Block::Message);
             }
-            b.extend([Block::Divider, Block::SoundTitle, Block::SoundRow]);
+            b.extend([Block::Divider, Block::BluetoothHeader, Block::Divider, Block::SoundTitle, Block::SoundRow]);
             if v.status.battery.is_some() {
                 b.extend([Block::Divider, Block::Battery]);
             }
@@ -191,7 +198,11 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, v: &View) -> Vec<(FRect, Hi
                 } else if !st.enabled {
                     "Desactivado".to_string()
                 } else {
-                    st.ssid.clone().unwrap_or_else(|| "No conectado".into())
+                    match (&st.ssid, st.connected) {
+                        (Some(s), _) => s.clone(),
+                        (None, true) => "Conectado".to_string(),
+                        (None, false) => "No conectado".to_string(),
+                    }
                 };
                 c.text(&f.small, &sub, FRect::new(tx, y + px(28.0), px(170.0), px(18.0)), argb(th.dim, 255), Align::Left);
                 if st.present {
@@ -219,11 +230,44 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, v: &View) -> Vec<(FRect, Hi
                     hits.push((FRect::new(card.x + px(6.0), ry, card.w - px(12.0), px(40.0)), Hit::Network(i)));
                 }
             }
+            Block::Notice => {
+                for (i, line) in ["Windows oculta las redes Wi-Fi a las apps", "que no tienen permiso de ubicación."].iter().enumerate() {
+                    c.text(&f.small, line, FRect::new(left, y + px(2.0 + 18.0 * i as f32), right - left, px(20.0)), argb(th.dim, 255), Align::Left);
+                }
+                let r = FRect::new(left, y + px(52.0), right - left, px(34.0));
+                c.fill_round(r, px(10.0), argb(th.accent, 255));
+                c.text(&f.small, "Permitir ubicación…", r, argb(th.accent_text, 255), Align::Center);
+                hits.push((r, Hit::Settings("ms-settings:privacy-location")));
+            }
             Block::Message => {
                 c.text(&f.small, v.message, FRect::new(left, y, right - left, bh), argb(th.dim, 255), Align::Left);
             }
             Block::Divider => {
                 c.fill_round(FRect::new(left, y + px(8.0), right - left, 1.0), 0.0, argb(th.fg, 28));
+            }
+            Block::BluetoothHeader => {
+                let bt = &v.status.bluetooth;
+                let tile = FRect::new(left, y + px(10.0), px(36.0), px(36.0));
+                c.fill_ellipse(tile, argb(if bt.on { th.accent } else { gray() }, 255));
+                glyphs::bluetooth(c, tile.x + px(9.0), tile.y + px(8.0), px(20.0), 0xFFFFFF, 255);
+                let tx = tile.x + tile.w + px(12.0);
+                c.text(&f.title, "Bluetooth", FRect::new(tx, y + px(6.0), px(160.0), px(24.0)), argb(th.fg, 255), Align::Left);
+                let sub = if !bt.present {
+                    "Sin adaptador".to_string()
+                } else if !bt.on {
+                    "Desactivado".to_string()
+                } else if bt.connected.is_empty() {
+                    "Sin dispositivos conectados".to_string()
+                } else {
+                    bt.connected.join(", ")
+                };
+                c.text(&f.small, &sub, FRect::new(tx, y + px(28.0), right - tx - px(54.0), px(18.0)), argb(th.dim, 255), Align::Left);
+                if bt.present {
+                    let sw = FRect::new(right - px(46.0), y + (bh - px(26.0)) / 2.0, px(46.0), px(26.0));
+                    switch(c, sw, bt.on, th);
+                    hits.push((FRect::new(sw.x - px(8.0), y, sw.w + px(8.0), bh), Hit::BluetoothToggle));
+                    hits.push((tile, Hit::BluetoothToggle));
+                }
             }
             Block::SoundTitle => {
                 c.text(&f.small_bold, "Sonido", FRect::new(left, y, px(70.0), bh), argb(th.dim, 255), Align::Left);
@@ -440,9 +484,10 @@ pub fn close() {
 impl Panel {
     /// Vuelve a leer el estado y la lista de redes.
     fn reload(&mut self) {
+        status::refresh_bluetooth();
         bar::refresh_status();
         self.status = bar::status();
-        self.networks = wifi::networks();
+        self.networks = wifi::networks().networks;
     }
 
     fn redraw(&mut self) {
@@ -497,6 +542,15 @@ fn act(hit: Hit) {
             };
             p.scanning = on;
             std::thread::sleep(std::time::Duration::from_millis(300));
+            p.reload();
+        }
+        Hit::BluetoothToggle => {
+            let on = !p.status.bluetooth.on;
+            p.message = match bluetooth::set_radio(on) {
+                Ok(()) => String::new(),
+                Err(e) => e,
+            };
+            status::refresh_bluetooth();
             p.reload();
         }
         Hit::Network(i) => {

@@ -20,6 +20,11 @@ toml = "0.8"
 version = "0.62"
 features = [
     "Win32_Foundation",
+    "Win32_System_Com_Urlmon",
+    "Foundation_Collections",
+    "Foundation",
+    "Devices_Radios",
+    "Win32_Devices_Bluetooth",
     "Win32_Storage_EnhancedStorage",
     "Win32_System_Variant",
     "Win32_NetworkManagement_Ndis",

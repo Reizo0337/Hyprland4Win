@@ -10,7 +10,10 @@ use windows::Win32::Graphics::Gdi::{
     DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
     DIB_RGB_COLORS, HGDIOBJ,
 };
-use windows::Win32::Graphics::GdiPlus::{GdipCreateBitmapFromScan0, GdipDisposeImage, GpBitmap, GpImage};
+use windows::Win32::Graphics::GdiPlus::{
+    GdipCloneBitmapAreaI, GdipCreateBitmapFromFile, GdipCreateBitmapFromScan0, GdipDisposeImage, GdipGetImageHeight,
+    GdipGetImageWidth, GpBitmap, GpImage, Status,
+};
 use windows::Win32::UI::Shell::{IShellItem, IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY};
 
 /// Resolución con la que se piden los iconos: da margen para la magnificación del dock.
@@ -45,6 +48,28 @@ impl Drop for Icon {
 /// Icono de una entrada de `shell:AppsFolder` (apps de escritorio y de la Tienda).
 pub fn from_apps_folder(id: &str) -> Option<Icon> {
     from_parsing_name(&format!("shell:AppsFolder\\{id}"))
+}
+
+/// Icono desde un archivo de imagen (`.png`, `.ico`...). Se copia a memoria para no dejar el archivo bloqueado.
+pub fn from_image_file(path: &str) -> Option<Icon> {
+    crate::gfx::start();
+    let wide = HSTRING::from(path);
+    unsafe {
+        let mut src = null_mut();
+        if GdipCreateBitmapFromFile(windows::core::PCWSTR(wide.as_ptr()), &mut src) != Status(0) || src.is_null() {
+            return None;
+        }
+        let (mut w, mut h) = (0u32, 0u32);
+        GdipGetImageWidth(src as *mut GpImage, &mut w);
+        GdipGetImageHeight(src as *mut GpImage, &mut h);
+        let mut dst = null_mut();
+        let st = GdipCloneBitmapAreaI(0, 0, w as i32, h as i32, PIXEL_FORMAT_32BPP_PARGB, src, &mut dst);
+        GdipDisposeImage(src as *mut GpImage);
+        if st != Status(0) || dst.is_null() || w == 0 || h == 0 {
+            return None;
+        }
+        Some(Icon { w: w as i32, h: h as i32, pixels: Vec::new(), bitmap: dst })
+    }
 }
 
 /// Icono de un archivo (por ejemplo, un `.exe`).

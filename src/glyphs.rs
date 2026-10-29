@@ -73,3 +73,16 @@ pub fn check(c: &mut Canvas, x: f32, y: f32, s: f32, color: u32) {
     c.line(x + s * 0.1, y + s * 0.55, x + s * 0.38, y + s * 0.82, w, argb(color, 255));
     c.line(x + s * 0.38, y + s * 0.82, x + s * 0.92, y + s * 0.2, w, argb(color, 255));
 }
+
+/// Símbolo de Bluetooth (la "B" rúnica); `alpha` atenúa cuando está apagado.
+pub fn bluetooth(c: &mut Canvas, x: f32, y: f32, s: f32, color: u32, alpha: u8) {
+    let w = (s * 0.11).max(1.2);
+    let p = |u: f32, v: f32| (x + u * s, y + v * s);
+    let col = argb(color, alpha);
+    let (a, b) = (p(0.5, 0.04), p(0.5, 0.96));
+    c.line(a.0, a.1, b.0, b.1, w, col);
+    let pts = [p(0.5, 0.04), p(0.8, 0.31), p(0.2, 0.69), p(0.5, 0.96), p(0.8, 0.69), p(0.2, 0.31), p(0.5, 0.04)];
+    for pair in pts.windows(2) {
+        c.line(pair[0].0, pair[0].1, pair[1].0, pair[1].1, w, col);
+    }
+}

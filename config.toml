@@ -7,7 +7,7 @@
 # Acciones: exec <comando>, close, focus <left|right|up|down>,
 #           move <left|right|up|down>, workspace <1-9|next|prev>, movetoworkspace <1-9|next|prev>,
 #           cycle <next|prev>,
-#           fullscreen, togglelayout, launcher, panel, quit,
+#           fullscreen, togglelayout, launcher, panel, menu, quit,
 #           none (traga el atajo: sirve para anular combinaciones de Windows, p. ej. Win+S)
 binds = [
     "Super+Return, exec, wt.exe",
@@ -21,7 +21,8 @@ binds = [
     "Super+Shift+Up, move, up",
     "Super+Shift+Down, move, down",
     "Super+F, fullscreen",
-    "Super+Space, togglelayout",
+    "Super+Space, menu",
+    "Super+Shift+Space, togglelayout",
     "Super+Tab, cycle, next",
     "Super+Shift+Tab, cycle, prev",
     "Super+Ctrl+Right, workspace, next",
@@ -89,8 +90,9 @@ font_size = 10         # puntos
 [dock]
 # Dock estilo macOS, centrado abajo en cada monitor. Reserva su espacio (el mosaico no lo tapa).
 enabled = true
-icon_size = 48         # px a 96 DPI
-magnification = 1.7    # escala del icono bajo el cursor; 1.0 la desactiva
+icon_size = 36         # px a 96 DPI
+magnification = 1.5    # escala del icono bajo el cursor; 1.0 la desactiva
+autohide = true        # se oculta cuando hay ventanas en el monitor; aparece al dejar el ratón en el borde inferior
 show_running = true    # añade las apps abiertas que no están fijadas
 # Apps fijadas, por nombre (búsqueda difusa en la lista de aplicaciones; usa los nombres de tu idioma).
 pinned = ["Explorador", "Edge", "Terminal", "Configuración", "Calculadora"]

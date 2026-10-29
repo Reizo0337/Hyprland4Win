@@ -17,10 +17,14 @@ fn reads_audio_wifi_and_battery() {
 
     // sin imprimir nombres de redes: solo contadores
     let st = wifi::status();
-    println!("wifi: presente={} radio={} conectado={}", st.present, st.enabled, st.ssid.is_some());
-    let nets = wifi::networks();
-    println!("{} redes visibles ({} guardadas)", nets.len(), nets.iter().filter(|n| n.known).count());
+    println!("wifi: presente={} radio={} conectado={} nombre_visible={} denegado={}", st.present, st.enabled, st.connected, st.ssid.is_some(), st.denied);
+    let scan = wifi::networks();
+    let nets = scan.networks;
+    println!("{} redes visibles ({} guardadas), acceso denegado: {}", nets.len(), nets.iter().filter(|n| n.known).count(), scan.denied);
     assert!(nets.iter().all(|n| n.signal <= 100 && !n.ssid.is_empty()));
+
+    let bt = hypr_win::bluetooth::status();
+    println!("bluetooth: presente={} encendido={} conectados={}", bt.present, bt.on, bt.connected.len());
 
     println!("batería: {:?}", power::battery());
 }

@@ -13,7 +13,7 @@ use crate::appid::AppIdentity;
 use crate::bar;
 use crate::dock;
 use crate::config::Config;
-use crate::keybinds::{Action, Binding, Dir};
+use crate::keybinds::{self, Action, Binding, Dir};
 use crate::launcher;
 use crate::panel;
 use crate::layout::{self, Gaps, Rect};
@@ -121,6 +121,23 @@ pub fn on_mouse_tick() {
 /// `reposition`: los monitores cambiaron (resolución, disposición); si no, solo el área de trabajo.
 pub fn on_work_area_changed(reposition: bool) {
     with(|a| a.refresh_monitors(reposition));
+}
+
+/// Atajos actuales como los escribió el usuario (`"Super+Q, close"`) junto con su versión analizada.
+pub fn bindings_raw() -> Vec<(String, Binding)> {
+    with(|a| a.cfg.binds.iter().cloned().zip(a.binds.iter().cloned()).collect()).unwrap_or_default()
+}
+
+/// Cambia las teclas del atajo `index`: lo guarda en `config.toml` y lo aplica sin reiniciar.
+pub fn change_binding(index: usize, new_keys: &str) -> Result<(), String> {
+    with(|a| a.change_binding(index, new_keys)).unwrap_or_else(|| Err("la aplicación está ocupada, inténtalo de nuevo".into()))
+}
+
+/// Pide cerrar hypr-win (restaura ventanas y barra de tareas).
+pub fn request_quit() {
+    unsafe {
+        let _ = PostMessageW(Some(bar::hwnd()), WM_CLOSE, Default::default(), Default::default());
+    }
 }
 
 pub fn binding_count() -> usize {
@@ -283,6 +300,9 @@ impl App {
             }
         }
         dock::update(groups);
+        // auto-ocultado: el dock se esconde en los monitores que tienen ventanas
+        let busy: Vec<bool> = self.model.mon_ws.iter().map(|&ws| !self.model.ws[ws].windows.is_empty()).collect();
+        dock::set_busy(&busy);
     }
 
     /// Clic en el dock: enfoca una ventana de la app (la siguiente si ya tiene el foco).
@@ -581,6 +601,23 @@ impl App {
         }
     }
 
+    fn change_binding(&mut self, index: usize, new_keys: &str) -> Result<(), String> {
+        let old_raw = self.cfg.binds.get(index).ok_or("ese atajo ya no existe")?.clone();
+        let rest = old_raw.split_once(',').map(|(_, r)| r).unwrap_or("");
+        let new_raw = format!("{new_keys},{rest}");
+        let parsed = keybinds::parse_binding(&new_raw)?;
+        crate::config::save_bind_change(&old_raw, &new_raw)?;
+        let main = bar::hwnd();
+        keybinds::unregister_all(main, self.binds.len());
+        self.cfg.binds[index] = new_raw;
+        self.binds[index] = parsed;
+        for f in keybinds::register_all(main, &self.binds) {
+            eprintln!("aviso: no se pudo registrar el atajo {f}");
+        }
+        keybinds::update_hook(&self.binds);
+        Ok(())
+    }
+
     /// Workspace `d` pasos desde el activo (con vuelta), saltando los que otro monitor está mostrando.
     fn relative_workspace(&self, d: i32) -> Option<usize> {
         let len = self.model.ws.len() as i32;
@@ -641,6 +678,7 @@ impl App {
             Action::Cycle(d) => self.cycle_focus(d),
             Action::Launcher => launcher::toggle(self.mons[self.model.focused_mon].rect),
             Action::Panel => panel::toggle(self.mons[self.model.focused_mon].rect, bar::height_px()),
+            Action::Menu => crate::menu::toggle(self.mons[self.model.focused_mon].rect),
             Action::None => {}
             Action::Fullscreen => self.toggle_fullscreen(),
             Action::ToggleLayout => {
