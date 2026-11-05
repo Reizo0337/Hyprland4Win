@@ -8,7 +8,7 @@ use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
 use windows::Win32::System::Com::{CoTaskMemFree, StructuredStorage::PropVariantToStringAlloc};
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, LPARAM, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW};
 use windows::Win32::Graphics::Dwm::{
     DwmFlush, DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
@@ -215,19 +215,35 @@ pub fn apply(items: &[(isize, Rect)]) {
 
 #[derive(Clone, Copy, Debug)]
 pub struct MonitorInfo {
+    /// Identificador estable del monitor (hash de su nombre de dispositivo, `\\.\DISPLAYn`): no cambia
+    /// aunque cambie su posición o el orden. Cabe en un entero con signo de 64 bits (se guarda en TOML).
+    pub id: u64,
     pub rect: Rect,
     /// Área de trabajo (excluye appbars como la nuestra y la barra de tareas).
     pub work: Rect,
+}
+
+/// FNV-1a del nombre del dispositivo, sin el bit alto (TOML solo guarda enteros con signo).
+fn device_id(name: &[u16]) -> u64 {
+    let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &c in &name[..end] {
+        h = (h ^ c as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (h & 0x7fff_ffff_ffff_ffff).max(1)
 }
 
 /// Monitores ordenados: el principal primero, después por posición (izquierda->derecha).
 pub fn monitors() -> Vec<MonitorInfo> {
     unsafe extern "system" fn cb(hm: HMONITOR, _: HDC, _: *mut RECT, lp: LPARAM) -> BOOL {
         let v = &mut *(lp.0 as *mut Vec<(bool, MonitorInfo)>);
-        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-        if GetMonitorInfoW(hm, &mut mi).as_bool() {
+        let mut ex = MONITORINFOEXW::default();
+        ex.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if GetMonitorInfoW(hm, &mut ex as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
+            let mi = ex.monitorInfo;
             let r = |r: RECT| Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top);
-            v.push((mi.dwFlags & 1 != 0, MonitorInfo { rect: r(mi.rcMonitor), work: r(mi.rcWork) }));
+            let id = device_id(&ex.szDevice);
+            v.push((mi.dwFlags & 1 != 0, MonitorInfo { id, rect: r(mi.rcMonitor), work: r(mi.rcWork) }));
         }
         BOOL(1)
     }

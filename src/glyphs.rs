@@ -1,10 +1,17 @@
 //! Glifos vectoriales de estado (Wi-Fi, volumen, batería), dibujados con GDI+ en un cuadrado de lado `s`.
-//! `color` es un COLORREF; el alfa se ajusta aquí para atenuar las partes apagadas.
+//! `color` es un COLORREF; el alfa se ajusta aquí para atenuar las partes apagadas. Si el tema trae un pack de
+//! iconos (`pack`, ver `iconset`), se dibuja el icono del pack en lugar del glifo vectorial.
 
 use crate::gfx::{argb, Canvas, FRect};
+use crate::iconset::draw_status;
 
 /// Wi-Fi: punto + 3 arcos. `lit` = arcos encendidos (0-3); `off` = radio apagada (se tacha).
-pub fn wifi(c: &mut Canvas, x: f32, y: f32, s: f32, lit: u8, off: bool, color: u32) {
+#[allow(clippy::too_many_arguments)] // funciones de dibujo: lienzo, pack, cuadrado (x, y, lado), estado y color
+pub fn wifi(c: &mut Canvas, pack: &str, x: f32, y: f32, s: f32, lit: u8, off: bool, color: u32) {
+    let name = if off { "wifi-off" } else { ["wifi-0", "wifi-1", "wifi-2", "wifi-3"][lit.min(3) as usize] };
+    if draw_status(c, pack, name, FRect::new(x, y, s, s), argb(color, 255)) {
+        return;
+    }
     let (ox, oy) = (x + s / 2.0, y + s * 0.88);
     let w = (s * 0.12).max(1.2);
     for k in 0..3u8 {
@@ -20,7 +27,12 @@ pub fn wifi(c: &mut Canvas, x: f32, y: f32, s: f32, lit: u8, off: bool, color: u
 }
 
 /// Altavoz con 0-2 ondas según el nivel; tachado si está en silencio.
-pub fn speaker(c: &mut Canvas, x: f32, y: f32, s: f32, level: f32, muted: bool, color: u32) {
+#[allow(clippy::too_many_arguments)]
+pub fn speaker(c: &mut Canvas, pack: &str, x: f32, y: f32, s: f32, level: f32, muted: bool, color: u32) {
+    let name = if muted { "speaker-off" } else if level <= 0.0 { "speaker-0" } else if level > 0.5 { "speaker-3" } else { "speaker-1" };
+    if draw_status(c, pack, name, FRect::new(x, y, s, s), argb(color, 255)) {
+        return;
+    }
     let p = |u: f32, v: f32| (x + u * s, y + v * s);
     c.fill_polygon(&[p(0.04, 0.38), p(0.26, 0.38), p(0.5, 0.16), p(0.5, 0.84), p(0.26, 0.62), p(0.04, 0.62)], argb(color, 255));
     let w = (s * 0.11).max(1.2);
@@ -40,7 +52,22 @@ pub fn speaker(c: &mut Canvas, x: f32, y: f32, s: f32, level: f32, muted: bool, 
 }
 
 /// Batería horizontal de `w` x `h`. Verde cargando, roja con poca carga.
-pub fn battery(c: &mut Canvas, r: FRect, percent: u8, charging: bool, color: u32) {
+pub fn battery(c: &mut Canvas, pack: &str, r: FRect, percent: u8, charging: bool, color: u32) {
+    let name = match (charging, percent) {
+        (true, _) => "battery-charging",
+        (_, 76..) => "battery-100",
+        (_, 51..) => "battery-75",
+        (_, 26..) => "battery-50",
+        (_, 11..) => "battery-25",
+        _ => "battery-0",
+    };
+    // el icono del pack es casi cuadrado: se dibuja centrado en el hueco de la batería
+    let side = r.h.max(r.w * 0.62);
+    let square = FRect::new(r.x + (r.w - side) / 2.0, r.y + (r.h - side) / 2.0, side, side);
+    let tint = if percent <= 15 && !charging { 0x3A45FF } else if charging { 0x58D130 } else { color };
+    if draw_status(c, pack, name, square, argb(tint, 255)) {
+        return;
+    }
     let FRect { x, y, w, h } = r;
     let nub = (w * 0.1).max(2.0);
     let body = FRect::new(x, y, w - nub - 1.0, h);
@@ -61,21 +88,30 @@ pub fn battery(c: &mut Canvas, r: FRect, percent: u8, charging: bool, color: u32
 }
 
 /// Candado pequeño (red protegida).
-pub fn lock(c: &mut Canvas, x: f32, y: f32, s: f32, color: u32) {
+pub fn lock(c: &mut Canvas, pack: &str, x: f32, y: f32, s: f32, color: u32) {
+    if draw_status(c, pack, "lock", FRect::new(x, y, s, s), argb(color, 255)) {
+        return;
+    }
     let w = (s * 0.12).max(1.0);
     c.arc(FRect::new(x + s * 0.22, y + s * 0.02, s * 0.56, s * 0.64), 180.0, 180.0, w, argb(color, 255));
     c.fill_round(FRect::new(x + s * 0.12, y + s * 0.42, s * 0.76, s * 0.52), s * 0.12, argb(color, 255));
 }
 
 /// Marca de verificación.
-pub fn check(c: &mut Canvas, x: f32, y: f32, s: f32, color: u32) {
+pub fn check(c: &mut Canvas, pack: &str, x: f32, y: f32, s: f32, color: u32) {
+    if draw_status(c, pack, "check", FRect::new(x, y, s, s), argb(color, 255)) {
+        return;
+    }
     let w = (s * 0.16).max(1.4);
     c.line(x + s * 0.1, y + s * 0.55, x + s * 0.38, y + s * 0.82, w, argb(color, 255));
     c.line(x + s * 0.38, y + s * 0.82, x + s * 0.92, y + s * 0.2, w, argb(color, 255));
 }
 
 /// Símbolo de Bluetooth (la "B" rúnica); `alpha` atenúa cuando está apagado.
-pub fn bluetooth(c: &mut Canvas, x: f32, y: f32, s: f32, color: u32, alpha: u8) {
+pub fn bluetooth(c: &mut Canvas, pack: &str, x: f32, y: f32, s: f32, color: u32, alpha: u8) {
+    if draw_status(c, pack, "bluetooth", FRect::new(x, y, s, s), argb(color, alpha)) {
+        return;
+    }
     let w = (s * 0.11).max(1.2);
     let p = |u: f32, v: f32| (x + u * s, y + v * s);
     let col = argb(color, alpha);

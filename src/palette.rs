@@ -52,6 +52,12 @@ pub enum RowIcon {
     Favicon(String),
     /// Glifo de *Segoe Fluent Icons* sobre una ficha de color (0xRRGGBB).
     Glyph(char, u32),
+    /// Miniatura de una imagen del disco (se genera en segundo plano y se guarda en caché).
+    File(String),
+    /// Ficha de un color liso (COLORREF).
+    Color(u32),
+    /// Muestra de un tema: fondo, acento y texto (COLORREF).
+    Swatch(u32, u32, u32),
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +112,9 @@ pub enum Outcome {
     Rerun,
     /// Sustituye el contenido de la paleta por otro manejador.
     Switch(Box<dyn Handler>),
+    /// Ejecuta una acción cuando la paleta ya no está ocupada (p. ej. cambiar el tema, que también
+    /// redibuja la propia paleta) y después vuelve a calcular las filas.
+    Run(Box<dyn FnOnce()>),
 }
 
 /// Contenido y comportamiento de la paleta.
@@ -149,7 +158,7 @@ pub struct Fonts {
     sub: Font,
     header: Font,
     hint: Font,
-    glyph: Font,
+    glyph: crate::iconset::IconFont,
     letter: Font,
 }
 
@@ -162,7 +171,7 @@ impl Fonts {
             sub: Font::new(&th.font, b * 0.88, false)?,
             header: Font::new(&th.font, b * 0.82, true)?,
             hint: Font::new(&th.font, b * 0.9, false)?,
-            glyph: Font::with_fallbacks(&["Segoe Fluent Icons", "Segoe MDL2 Assets"], b * 1.2, false)?,
+            glyph: crate::iconset::IconFont::new(&th.icons, b * 1.2)?,
             letter: Font::new(&th.font, b * 1.15, true)?,
         })
     }
@@ -354,7 +363,19 @@ fn draw_icon(c: &mut Canvas, f: &Fonts, row: &Row, icon: Option<&Icon>, r: FRect
     match &row.icon {
         RowIcon::Glyph(ch, rgb) => {
             c.fill_round(r, px(8.5), argb(rgb_to_colorref(*rgb), 255));
-            c.text(&f.glyph, &ch.to_string(), r, argb(0xFFFFFF, 255), Align::Center);
+            f.glyph.draw(c, *ch, r, argb(0xFFFFFF, 255));
+        }
+        RowIcon::Color(col) => {
+            c.fill_round(r, px(8.5), argb(*col, 255));
+            c.stroke_round(r.grow(-0.75), px(8.5), 1.5, argb(0x808080, 90));
+        }
+        RowIcon::Swatch(bg, accent, fg) => {
+            c.fill_round(r, px(8.5), argb(*bg, 255));
+            c.stroke_round(r.grow(-0.75), px(8.5), 1.5, argb(*fg, 70));
+            let d = r.w * 0.34;
+            c.fill_ellipse(FRect::new(r.x + r.w * 0.2, r.y + r.h * 0.2, d, d), argb(*accent, 255));
+            c.fill_round(FRect::new(r.x + r.w * 0.2, r.y + r.h * 0.68, r.w * 0.6, r.h * 0.1), px(2.0), argb(*fg, 230));
+            c.fill_round(FRect::new(r.x + r.w * 0.2, r.y + r.h * 0.5, r.w * 0.34, r.h * 0.08), px(2.0), argb(*fg, 130));
         }
         _ => {
             c.fill_round(r, px(8.5), argb(tile_color(&row.title), 255));
@@ -368,6 +389,39 @@ fn draw_icon(c: &mut Canvas, f: &Fonts, row: &Row, icon: Option<&Icon>, r: FRect
 
 /// Dominios que se están descargando o que ya fallaron (no se reintentan).
 static FETCHING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Archivo de la miniatura en caché de `path` (la clave incluye tamaño y fecha: si la imagen cambia, se rehace).
+fn thumb_cache_path(path: &str) -> Option<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let meta = std::fs::metadata(path).ok()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (path, meta.len(), meta.modified().ok()).hash(&mut h);
+    Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join(r"hypr-win\thumbs").join(format!("{:016x}.png", h.finish())))
+}
+
+/// Genera la miniatura de `path` en otro hilo (decodificar una foto grande tarda) y avisa a la paleta.
+fn make_thumbnail_in_background(path: String, hwnd: isize) {
+    let marker = format!("thumb:{path}");
+    {
+        let mut f = FETCHING.lock().unwrap_or_else(|e| e.into_inner());
+        if f.contains(&marker) {
+            return;
+        }
+        f.push(marker);
+    }
+    let _ = std::thread::Builder::new().name("hypr-win-thumb".into()).spawn(move || {
+        let Some(cache) = thumb_cache_path(&path) else { return };
+        if let Some(dir) = cache.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let ok = icons::thumbnail_from_file(&path, 96).is_some_and(|t| t.save_png(&cache.to_string_lossy()));
+        if ok {
+            unsafe {
+                let _ = PostMessageW(Some(HWND(hwnd as *mut std::ffi::c_void)), WM_ICON_READY, WPARAM(0), LPARAM(0));
+            }
+        }
+    });
+}
 
 /// Descarga el favicon de `host` en otro hilo y avisa a la paleta cuando llega.
 fn fetch_favicon_in_background(host: String, hwnd: isize) {
@@ -529,6 +583,35 @@ fn finish_apply() {
     if WANT_CLOSE.with(|c| c.replace(false)) {
         close(false);
     }
+    let jobs: Vec<Box<dyn FnOnce()>> = DEFERRED.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    if !jobs.is_empty() {
+        for job in jobs {
+            job();
+        }
+        let _ = with(|p| {
+            p.query.clear();
+            p.reload_rows();
+            p.redraw();
+        });
+    }
+}
+
+thread_local! {
+    static DEFERRED: RefCell<Vec<Box<dyn FnOnce()>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Cambia colores y fuente sin reiniciar.
+pub fn set_theme(cfg: &crate::config::Bar) -> Result<(), String> {
+    let theme = Theme::from_cfg(cfg)?;
+    let fonts = Fonts::new(&theme).ok_or("no se pudo crear la fuente de la paleta")?;
+    let _ = with(|p| {
+        p.theme = theme;
+        p.fonts = fonts;
+        if unsafe { IsWindowVisible(p.hwnd).as_bool() } {
+            p.redraw();
+        }
+    });
+    Ok(())
 }
 
 thread_local! {
@@ -564,6 +647,18 @@ impl Palette {
             match icon {
                 RowIcon::App(id) => {
                     self.icons.entry(id.clone()).or_insert_with(|| icons::from_apps_folder(&id));
+                }
+                RowIcon::File(path) => {
+                    let key = format!("img:{path}");
+                    if self.icons.contains_key(&key) {
+                        continue;
+                    }
+                    match thumb_cache_path(&path).filter(|c| c.is_file()) {
+                        Some(cache) => {
+                            self.icons.insert(key, icons::from_image_file(&cache.to_string_lossy()));
+                        }
+                        None => make_thumbnail_in_background(path, hwnd),
+                    }
                 }
                 RowIcon::Favicon(host) => {
                     let key = format!("fav:{host}");
@@ -605,6 +700,7 @@ impl Palette {
                 self.query.clear();
                 self.reload_rows();
             }
+            Outcome::Run(f) => DEFERRED.with(|d| d.borrow_mut().push(f)),
         }
         self.sync_capture();
         self.redraw();
@@ -634,6 +730,7 @@ impl Palette {
             .map(|r| match &r.icon {
                 RowIcon::App(id) => self.icons.get(id).and_then(|i| i.as_ref()),
                 RowIcon::Favicon(h) => self.icons.get(&format!("fav:{h}")).and_then(|i| i.as_ref()),
+                RowIcon::File(p) => self.icons.get(&format!("img:{p}")).and_then(|i| i.as_ref()),
                 _ => None,
             })
             .collect();

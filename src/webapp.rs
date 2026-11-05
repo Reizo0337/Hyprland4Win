@@ -101,7 +101,7 @@ pub fn browser() -> Option<PathBuf> {
 }
 
 /// Descarga `url` a `dest`; `true` si el archivo existe y no está vacío.
-fn download(url: &str, dest: &Path) -> bool {
+pub(crate) fn download(url: &str, dest: &Path) -> bool {
     let r = unsafe { URLDownloadToFileW(None, &HSTRING::from(url), &HSTRING::from(dest.to_string_lossy().as_ref()), 0, None) };
     r.is_ok() && std::fs::metadata(dest).is_ok_and(|m| m.len() > 0)
 }

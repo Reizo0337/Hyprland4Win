@@ -7,7 +7,7 @@
 # Acciones: exec <comando>, close, focus <left|right|up|down>,
 #           move <left|right|up|down>, workspace <1-9|next|prev>, movetoworkspace <1-9|next|prev>,
 #           cycle <next|prev>,
-#           fullscreen, togglelayout, launcher, panel, menu, quit,
+#           fullscreen, togglelayout, launcher, panel, menu, widgets, quit,
 #           none (traga el atajo: sirve para anular combinaciones de Windows, p. ej. Win+S)
 binds = [
     "Super+Return, exec, wt.exe",
@@ -32,6 +32,7 @@ binds = [
     "Super+K, launcher",
     "Super+D, launcher",
     "Super+I, panel",
+    "Super+Shift+W, widgets",
     "Super+Shift+E, quit",
     "Super+S, none",
     "Super+W, none",
@@ -72,12 +73,14 @@ hide_taskbar = true    # oculta la barra de tareas de Windows (se restaura al sa
 block_start_menu = true  # la tecla Win sola ya no abre el menú Inicio (Win+R sigue funcionando)
 
 [bar]
-# Estilo macOS. La barra y el lanzador (Super+K) comparten estos colores y la fuente.
+# Estilo macOS. La barra, el dock, el lanzador, el panel y los avisos comparten estos colores y la fuente.
+# Si `theme` no está vacío, los colores salen de ese tema (Super+Espacio > Temas) y los de abajo se ignoran.
 # Modo oscuro (por defecto):
 #   background "#1e1e20"  foreground "#f5f5f7"  dim "#8e8e93"  accent "#0a84ff"  accent_text "#ffffff"
 # Modo claro:
 #   background "#f2f2f7"  foreground "#1d1d1f"  dim "#86868b"  accent "#007aff"  accent_text "#ffffff"
-height = 28            # px a 96 DPI (se escala con el DPI del sistema)
+theme = "Mi Grafito 2"   # tema activo; "" = usar los colores de abajo
+height = 22            # px a 96 DPI (se escala con el DPI del sistema)
 opacity = 80           # % de opacidad de la barra (20-100); más bajo = más translúcida
 background = "#1e1e20"
 foreground = "#f5f5f7"
@@ -85,14 +88,22 @@ dim = "#8e8e93"        # workspaces vacíos y textos secundarios
 accent = "#0a84ff"     # pastilla del workspace activo y selección del lanzador
 accent_text = "#ffffff"
 font = "Segoe UI Variable Text"   # lo más parecido a San Francisco en Windows 11 (si no está, Segoe UI)
-font_size = 10         # puntos
+font_size = 8         # puntos
 
 [dock]
 # Dock estilo macOS, centrado abajo en cada monitor. Reserva su espacio (el mosaico no lo tapa).
 enabled = true
 icon_size = 36         # px a 96 DPI
-magnification = 1.5    # escala del icono bajo el cursor; 1.0 la desactiva
+magnification = 1    # escala del icono bajo el cursor; 1.0 la desactiva
 autohide = true        # se oculta cuando hay ventanas en el monitor; aparece al dejar el ratón en el borde inferior
 show_running = true    # añade las apps abiertas que no están fijadas
 # Apps fijadas, por nombre (búsqueda difusa en la lista de aplicaciones; usa los nombres de tu idioma).
-pinned = ["Explorador", "Edge", "Terminal", "Configuración", "Calculadora"]
+pinned = ["Explorador", "Brave", "VSCode", "Claude", "AGY"]
+
+[wallpaper]
+# Fondo de escritorio (Super+Espacio > Fondo de pantalla). Se aplica con la interfaz IDesktopWallpaper de Windows.
+dir = ""               # carpeta con tus imágenes; vacío = Imágenes\Wallpapers
+interval_minutes = 0   # cambiar de fondo al azar cada N minutos (0 = no)
+fit = "fill"           # fill | fit | stretch | tile | center | span
+follow_theme = false   # al cambiar de tema, generar y aplicar su fondo
+lock_screen = true     # aplicar también la imagen a la pantalla de bloqueo (Win+L)

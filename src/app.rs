@@ -53,6 +53,10 @@ pub struct App {
     identities: std::cell::RefCell<HashMap<isize, Option<AppIdentity>>>,
     /// Retraso (ms) del arranque de las animaciones; se usa al cerrar una ventana.
     next_delay: u32,
+    /// Minutos desde el último cambio automático de fondo.
+    wallpaper_minutes: u32,
+    /// Último workspace que mostraba cada monitor (por id), para devolvérselo si se vuelve a conectar.
+    last_ws: HashMap<u64, usize>,
 }
 
 /// Estado del foco por ratón: solo actúa si el cursor se movió y se detuvo un instante sobre la ventana.
@@ -133,6 +137,71 @@ pub fn change_binding(index: usize, new_keys: &str) -> Result<(), String> {
     with(|a| a.change_binding(index, new_keys)).unwrap_or_else(|| Err("la aplicación está ocupada, inténtalo de nuevo".into()))
 }
 
+/// Aplica un tema a toda la interfaz en vivo (barra, dock, paleta, panel y avisos).
+pub fn apply_theme(def: &crate::theme::ThemeDef) -> Result<(), String> {
+    crate::theme::validate(def)?;
+    let bar_cfg = with(|a| {
+        crate::theme::apply_to_bar(def, &mut a.cfg.bar);
+        a.cfg.bar.theme = def.name.clone();
+        a.cfg.bar.clone()
+    })
+    .ok_or("la aplicación está ocupada, inténtalo de nuevo")?;
+    bar::set_theme(&bar_cfg)?;
+    dock::set_theme(&bar_cfg)?;
+    crate::palette::set_theme(&bar_cfg)?;
+    crate::panel::set_theme(&bar_cfg)?;
+    crate::toast::set_theme(&bar_cfg)?;
+    crate::widgets::set_theme(&bar_cfg)?;
+    Ok(())
+}
+
+/// Cambia solo el diseño de la barra ("bar" o "bubbles"); los colores no se tocan.
+pub fn apply_bar_style(style: &str) -> Result<(), String> {
+    if !matches!(style, "bar" | "bubbles") {
+        return Err(format!("estilo de barra desconocido: {style}"));
+    }
+    let bar_cfg = with(|a| {
+        a.cfg.bar.style = style.to_string();
+        a.cfg.bar.clone()
+    })
+    .ok_or("la aplicación está ocupada, inténtalo de nuevo")?;
+    bar::set_theme(&bar_cfg)
+}
+
+/// Configuración de la barra tal como está aplicada ahora (con el tema activo).
+pub fn current_bar() -> Option<crate::config::Bar> {
+    with(|a| a.cfg.bar.clone())
+}
+
+/// Configuración del fondo de escritorio aplicada ahora.
+pub fn wallpaper_cfg() -> crate::config::Wallpaper {
+    with(|a| a.cfg.wallpaper.clone()).unwrap_or_default()
+}
+
+/// Actualiza la configuración del fondo en memoria y (re)programa el cambio automático.
+pub fn set_wallpaper_cfg(w: crate::config::Wallpaper) {
+    with(|a| {
+        a.cfg.wallpaper = w.clone();
+        a.schedule_wallpaper();
+    });
+}
+
+/// Cada minuto: si toca, cambia a un fondo al azar de las carpetas de imágenes.
+pub fn on_wallpaper_tick() {
+    with(|a| a.wallpaper_tick());
+}
+
+/// Copia de la configuración aplicada ahora.
+pub fn config_snapshot() -> Config {
+    with(|a| a.cfg.clone()).unwrap_or_else(Config::default_config)
+}
+
+/// Vuelve a leer `config.toml` y aplica en vivo todo lo que se puede (huecos, animaciones, barra, dock,
+/// barra de tareas, atajos...). Devuelve lo que cambió pero exige reiniciar.
+pub fn reload_config() -> Result<Vec<&'static str>, String> {
+    with(|a| a.reload_config()).unwrap_or_else(|| Err("la aplicación está ocupada, inténtalo de nuevo".into()))
+}
+
 /// Pide cerrar hypr-win (restaura ventanas y barra de tareas).
 pub fn request_quit() {
     unsafe {
@@ -155,7 +224,7 @@ pub fn build(cfg: Config, mons: Vec<MonitorInfo>) -> Result<App, String> {
     let mut mons = mons;
     mons.truncate(managed);
     claim_taskbar_space(&mut mons, cfg.general.hide_taskbar, dock_reserve(&cfg));
-    Ok(App { cfg, binds, model, originals: HashMap::new(), mons, mouse: MouseFocus::default(), fresh: HashSet::new(), identities: Default::default(), next_delay: 0 })
+    Ok(App { cfg, binds, model, originals: HashMap::new(), mons, mouse: MouseFocus::default(), fresh: HashSet::new(), identities: Default::default(), next_delay: 0, wallpaper_minutes: 0, last_ws: HashMap::new() })
 }
 
 impl App {
@@ -173,12 +242,17 @@ impl App {
     }
 
     fn refresh_monitors(&mut self, reposition: bool) {
-        let mut now = window::monitors();
-        if now.len() < self.mons.len() {
-            eprintln!("aviso: cambió el número de monitores; reinicia hypr-win");
+        let all = window::monitors();
+        if all.is_empty() {
+            return; // las pantallas se están reconfigurando: esperamos al siguiente aviso
+        }
+        let mut now = all.clone();
+        now.truncate(self.cfg.general.workspaces);
+        let same_set = now.len() == self.mons.len() && now.iter().zip(&self.mons).all(|(a, b)| a.id == b.id);
+        if !same_set {
+            self.monitors_changed(now, &all);
             return;
         }
-        now.truncate(self.mons.len());
         if reposition {
             bar::reposition_all(&now);
             now = window::monitors();
@@ -188,9 +262,83 @@ impl App {
         let changed = now.iter().zip(&self.mons).any(|(a, b)| a.rect != b.rect || a.work != b.work);
         if changed {
             self.mons = now;
-            dock::set_monitors(&self.mon_rects());
+            dock::set_monitors(&self.mon_ids());
+            crate::widgets::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
+            if let Some(m) = self.mons.first() {
+                crate::toast::set_monitor(m.rect);
+            }
             self.retile_visible(Enter::None);
         }
+    }
+
+    fn mon_ids(&self) -> Vec<(u64, Rect)> {
+        self.mons.iter().map(|m| (m.id, m.rect)).collect()
+    }
+
+    /// Se conectó o desconectó un monitor (o cambió el principal): se actualiza todo en vivo. Los monitores
+    /// que siguen conservan su workspace; los nuevos recuperan el que tenían o toman uno libre, y los
+    /// workspaces de los desconectados se ocultan (sus ventanas no se pierden: siguen en su workspace).
+    fn monitors_changed(&mut self, now: Vec<MonitorInfo>, all: &[MonitorInfo]) {
+        let old_ids: Vec<u64> = self.mons.iter().map(|m| m.id).collect();
+        let old_ws = self.model.mon_ws.clone();
+        let focused_id = old_ids.get(self.model.focused_mon).copied();
+        for (&id, &ws) in old_ids.iter().zip(&old_ws) {
+            self.last_ws.insert(id, ws);
+        }
+
+        let mut taken: HashSet<usize> = HashSet::new();
+        let mut assigned: Vec<Option<usize>> = vec![None; now.len()];
+        for (i, m) in now.iter().enumerate() {
+            if let Some(p) = old_ids.iter().position(|&id| id == m.id) {
+                assigned[i] = Some(old_ws[p]);
+                taken.insert(old_ws[p]);
+            }
+        }
+        let mut fresh_ws: Vec<usize> = Vec::new();
+        for (i, m) in now.iter().enumerate() {
+            if assigned[i].is_some() {
+                continue;
+            }
+            let wanted = self.last_ws.get(&m.id).copied().filter(|w| *w < self.model.ws.len() && !taken.contains(w));
+            let ws = wanted.or_else(|| (0..self.model.ws.len()).find(|w| !taken.contains(w)));
+            if let Some(ws) = ws {
+                taken.insert(ws);
+                assigned[i] = Some(ws);
+                fresh_ws.push(ws);
+            }
+        }
+        // los workspaces que ya no se ven en ningún monitor
+        for ws in old_ws {
+            if !taken.contains(&ws) {
+                self.hide_ws(ws);
+            }
+        }
+        let keep: Vec<(usize, MonitorInfo)> = now.into_iter().zip(assigned).filter_map(|(m, ws)| ws.map(|w| (w, m))).collect();
+        if keep.is_empty() {
+            return;
+        }
+        self.model.mon_ws = keep.iter().map(|(w, _)| *w).collect();
+        let mut now: Vec<MonitorInfo> = keep.into_iter().map(|(_, m)| m).collect();
+        self.model.focused_mon = focused_id.and_then(|id| now.iter().position(|m| m.id == id)).unwrap_or(0);
+
+        bar::sync(&now);
+        let n = now.len();
+        now = window::monitors();
+        now.truncate(n);
+        claim_taskbar_space(&mut now, self.cfg.general.hide_taskbar, dock_reserve(&self.cfg));
+        self.mons = now;
+        dock::set_monitors(&self.mon_ids());
+        crate::widgets::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
+        if let Some(m) = self.mons.first() {
+            crate::toast::set_monitor(m.rect);
+        }
+        for ws in self.model.mon_ws.clone() {
+            let enter = if fresh_ws.contains(&ws) { Enter::PopIn } else { Enter::None };
+            self.retile_ws(ws, enter);
+        }
+        self.focus_active();
+        self.update_bar();
+        eprintln!("monitores: {} conectados, {} gestionados", all.len(), self.mons.len());
     }
 
     fn adopt_existing(&mut self) {
@@ -209,6 +357,12 @@ impl App {
         if self.cfg.general.focus_follows_mouse {
             unsafe {
                 SetTimer(Some(bar::hwnd()), bar::TIMER_MOUSE, 40, None);
+            }
+        }
+        self.schedule_wallpaper();
+        if let Some(fit) = crate::wallpaper::Fit::parse(&self.cfg.wallpaper.fit) {
+            if self.cfg.wallpaper.follow_theme || self.cfg.wallpaper.interval_minutes > 0 {
+                let _ = crate::wallpaper::set_fit(fit);
             }
         }
     }
@@ -618,6 +772,102 @@ impl App {
         Ok(())
     }
 
+    fn reload_config(&mut self) -> Result<Vec<&'static str>, String> {
+        let path = crate::config::path().ok_or("no hay un archivo de configuración cargado")?;
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let new = Config::parse(&text)?;
+        let new_binds = if new.binds != self.cfg.binds { Some(new.bindings()?) } else { None };
+        let old = std::mem::replace(&mut self.cfg, new);
+
+        let mut restart = Vec::new();
+        if old.general.workspaces != self.cfg.general.workspaces {
+            restart.push("el número de escritorios");
+        }
+        if old.dock.enabled != self.cfg.dock.enabled {
+            restart.push("activar o desactivar el dock");
+        }
+        if let Some(b) = new_binds {
+            let main = bar::hwnd();
+            keybinds::unregister_all(main, self.binds.len());
+            self.binds = b;
+            for f in keybinds::register_all(main, &self.binds) {
+                eprintln!("aviso: no se pudo registrar el atajo {f}");
+            }
+            keybinds::update_hook(&self.binds);
+        }
+
+        let (follow, hide, block) = (self.cfg.general.focus_follows_mouse, self.cfg.general.hide_taskbar, self.cfg.general.block_start_menu);
+        unsafe {
+            if follow {
+                SetTimer(Some(bar::hwnd()), bar::TIMER_MOUSE, 40, None);
+            } else {
+                let _ = KillTimer(Some(bar::hwnd()), bar::TIMER_MOUSE);
+            }
+            if old.general.hide_taskbar != hide {
+                window::set_taskbar_visible(!hide);
+                if hide {
+                    SetTimer(Some(bar::hwnd()), bar::TIMER_TASKBAR, 1000, None);
+                } else {
+                    let _ = KillTimer(Some(bar::hwnd()), bar::TIMER_TASKBAR);
+                }
+            }
+        }
+        keybinds::set_block_start(block);
+
+        // apariencia: colores, fuente y translucidez de toda la interfaz
+        let bar_cfg = self.cfg.bar.clone();
+        bar::set_theme(&bar_cfg)?;
+        dock::set_theme(&bar_cfg)?;
+        crate::palette::set_theme(&bar_cfg)?;
+        crate::panel::set_theme(&bar_cfg)?;
+        crate::toast::set_theme(&bar_cfg)?;
+        crate::widgets::set_theme(&bar_cfg)?;
+        if old.bar.height != bar_cfg.height {
+            let mons = window::monitors();
+            bar::set_height(bar_cfg.height, &mons[..self.mons.len().min(mons.len())]);
+        }
+        dock::reconfigure(&self.cfg.dock);
+        self.schedule_wallpaper();
+
+        // áreas de trabajo (barra de tareas oculta, dock y barra) y recolocación
+        self.refresh_monitors(false);
+        self.retile_visible(Enter::None);
+        self.update_bar();
+        Ok(restart)
+    }
+
+    /// Arranca o detiene el temporizador del cambio automático de fondo.
+    fn schedule_wallpaper(&mut self) {
+        self.wallpaper_minutes = 0;
+        unsafe {
+            if self.cfg.wallpaper.interval_minutes > 0 {
+                SetTimer(Some(bar::hwnd()), bar::TIMER_WALLPAPER, 60_000, None);
+            } else {
+                let _ = KillTimer(Some(bar::hwnd()), bar::TIMER_WALLPAPER);
+            }
+        }
+    }
+
+    fn wallpaper_tick(&mut self) {
+        self.wallpaper_minutes += 1;
+        if self.wallpaper_minutes < self.cfg.wallpaper.interval_minutes {
+            return;
+        }
+        self.wallpaper_minutes = 0;
+        let images = crate::wallpaper::images(&self.cfg.wallpaper.dir, 400);
+        if images.is_empty() {
+            return;
+        }
+        let current = crate::wallpaper::current();
+        let candidates: Vec<_> = images.iter().filter(|i| !current.iter().any(|c| c.eq_ignore_ascii_case(&i.path.to_string_lossy()))).collect();
+        let pool: Vec<_> = if candidates.is_empty() { images.iter().collect() } else { candidates };
+        let pick = pool[crate::wallpaper::random_index(pool.len())];
+        let path = pick.path.to_string_lossy().into_owned();
+        if crate::wallpaper::set(&path, None).is_ok() && self.cfg.wallpaper.lock_screen {
+            let _ = crate::wallpaper::set_lock_screen(&path);
+        }
+    }
+
     /// Workspace `d` pasos desde el activo (con vuelta), saltando los que otro monitor está mostrando.
     fn relative_workspace(&self, d: i32) -> Option<usize> {
         let len = self.model.ws.len() as i32;
@@ -679,6 +929,7 @@ impl App {
             Action::Launcher => launcher::toggle(self.mons[self.model.focused_mon].rect),
             Action::Panel => panel::toggle(self.mons[self.model.focused_mon].rect, bar::height_px()),
             Action::Menu => crate::menu::toggle(self.mons[self.model.focused_mon].rect),
+            Action::Widgets => crate::widgets::toggle_peek(),
             Action::None => {}
             Action::Fullscreen => self.toggle_fullscreen(),
             Action::ToggleLayout => {

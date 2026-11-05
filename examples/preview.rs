@@ -105,16 +105,15 @@ fn main() {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
     let dir = std::env::args().nth(1).expect("uso: preview <carpeta> [claro]");
-    let light = std::env::args().nth(2).as_deref() == Some("claro");
+    let theme_name = std::env::args().nth(2);
     let mut cfg = Config::default_config();
-    if light {
-        cfg.bar.background = "#f2f2f7".into();
-        cfg.bar.foreground = "#1d1d1f".into();
-        cfg.bar.dim = "#86868b".into();
-        cfg.bar.accent = "#007aff".into();
+    if let Some(n) = &theme_name {
+        let n = if n == "claro" { "Apple Claro" } else { n.as_str() };
+        let def = hypr_win::theme::find(n).unwrap_or_else(|| panic!("no existe el tema {n}"));
+        hypr_win::theme::apply_to_bar(&def, &mut cfg.bar);
     }
     let theme = Theme::from_cfg(&cfg.bar).unwrap();
-    let suffix = if light { "-claro" } else { "" };
+    let suffix = theme_name.map(|n| format!("-{}", n.replace(' ', "_"))).unwrap_or_default();
 
     // estado de ejemplo
     let status = Status {
@@ -129,9 +128,13 @@ fn main() {
     let mut canvas = Canvas::new(1280, bar::BAR_PREVIEW_HEIGHT).unwrap();
     let occupied = [true, true, false, true, false, false, false, false, false];
     let clock = bar::clock_text();
-    let view = BarView { occupied: &occupied, hl: 1.0, focused: true, title: "hypr-win — Visual Studio Code", right: &clock, status: &status };
+    let view = BarView { occupied: &occupied, hl: 1.0, focused: true, title: "hypr-win — Visual Studio Code", right: &clock, status: &status, bubbles: cfg.bar.style == "bubbles" };
     bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &view);
     save(&canvas, &format!("{dir}/bar{suffix}.png"));
+    // el diseño de burbujas (Minimal 2), sea cual sea el configurado
+    let bubbles = BarView { bubbles: true, ..view };
+    bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &bubbles);
+    save(&canvas, &format!("{dir}/bar-bubbles{suffix}.png"));
 
     // paleta (Win+K y menú Win+Espacio)
     apps::start_indexing();
@@ -149,6 +152,7 @@ fn main() {
             .map(|r| match &r.icon {
                 RowIcon::App(id) => icons::from_apps_folder(id),
                 RowIcon::Favicon(h) => hypr_win::webapp::cached_favicon(h).and_then(|p| icons::from_image_file(&p.to_string_lossy())),
+                RowIcon::File(path) => icons::thumbnail_from_file(path, 96),
                 _ => None,
             })
             .collect();
@@ -240,12 +244,169 @@ fn main() {
         save(&c, &format!("{dir}/panel-denied{suffix}.png"));
     }
 
+    // páginas de temas del menú
+    {
+        let swatches: Vec<Row> = hypr_win::theme::builtins()
+            .iter()
+            .take(6)
+            .enumerate()
+            .map(|(i, d)| {
+                let c = |h: &str| hypr_win::config::parse_color(h).unwrap();
+                Row::new(d.name.clone())
+                    .subtitle("Predefinido")
+                    .hint(if i == 0 { "Activo" } else { "Aplicar" })
+                    .icon(RowIcon::Swatch(c(&d.background), c(&d.accent), c(&d.foreground)))
+                    .section("Predefinidos")
+            })
+            .collect();
+        save_palette("menu-themes", "Temas", "Buscar un tema", "", &swatches, true, 2);
+        let col = |h: &str| RowIcon::Color(hypr_win::config::parse_color(h).unwrap());
+        let edit = vec![
+            Row::new("Fondo").subtitle("Se guardará como un tema tuyo").hint("#1e1e20").icon(col("#1e1e20")).section("Propiedades"),
+            Row::new("Texto").subtitle("Se guardará como un tema tuyo").hint("#f5f5f7").icon(col("#f5f5f7")).section("Propiedades"),
+            Row::new("Acento").subtitle("Se guardará como un tema tuyo").hint("#0a84ff").icon(col("#0a84ff")).section("Propiedades"),
+            Row::new("Fuente").subtitle("Se guardará como un tema tuyo").hint("Segoe UI Variable Text").glyph('\u{E8D2}', 0x8E8E93).section("Propiedades"),
+            Row::new("Opacidad de la barra").subtitle("Se guardará como un tema tuyo").hint("80 %").glyph('\u{E706}', 0x8E8E93).section("Propiedades"),
+        ];
+        save_palette("menu-theme-edit", "Editar tema", "Elegir qué cambiar", "", &edit, true, 2);
+        let accents: Vec<Row> = [("Azul", "#0a84ff"), ("Verde", "#30d158"), ("Naranja", "#ff9f0a"), ("Morado", "#bf5af2"), ("Rosa", "#ff375f")]
+            .iter()
+            .map(|(n, h)| Row::new(*n).subtitle(*h).hint("Aplicar").icon(col(h)).section("Colores de Apple"))
+            .collect();
+        save_palette("menu-theme-accent", "Acento", "Color hexadecimal (p. ej. #0a84ff)", "", &accents, true, 3);
+    }
+
+    // fondo de pantalla: degradados generados y la página del menú con miniaturas reales
+    {
+        use hypr_win::wallpaper::{self, Kind};
+        let c = |h: &str| hypr_win::config::parse_color(h).unwrap();
+        let (bg, ac, fg) = (c(&cfg.bar.background), c(&cfg.bar.accent), c(&cfg.bar.foreground));
+        for kind in Kind::ALL {
+            let (w, h) = (640usize, 360usize);
+            let mut canvas = Canvas::new(w as i32, h as i32).unwrap();
+            canvas.fill_from(&wallpaper::render(kind, w, h, bg, ac));
+            canvas.save_png(&format!("{dir}/wp-{}{suffix}.png", kind.key()));
+        }
+        let mut rows: Vec<Row> = Kind::ALL
+            .iter()
+            .map(|k| Row::new(k.label()).subtitle("Con los colores del tema").hint("Generar").icon(RowIcon::Swatch(bg, ac, fg)).section("Fondo del tema"))
+            .collect();
+        for img in wallpaper::images("", 3) {
+            rows.push(Row::new(img.name.clone()).subtitle(img.source).hint("Aplicar").icon(RowIcon::File(img.path.to_string_lossy().into_owned())).section("Imágenes"));
+        }
+        save_palette("menu-wallpaper", "Fondo", "Buscar una imagen o una opción", "", &rows, true, 4);
+    }
+
+    // ajustes
+    {
+        use hypr_win::settings::{self, Kind};
+        let rows: Vec<Row> = settings::ALL
+            .iter()
+            .take(9)
+            .map(|st| {
+                let rgb = match st.group {
+                    "Ventanas" => 0x0A84FF,
+                    "Sistema" => 0xFF9F0A,
+                    "Barra" => 0xBF5AF2,
+                    _ => 0x30D158,
+                };
+                let glyph = if matches!(st.kind, Kind::Bool) { '\u{E73E}' } else { '\u{E713}' };
+                let sub = if st.restart { format!("{} · requiere reiniciar", st.hint) } else { st.hint.to_string() };
+                Row::new(st.label).subtitle(sub).hint(settings::get(&cfg, st)).glyph(glyph, rgb).section(st.group)
+            })
+            .collect();
+        save_palette("menu-settings", "Ajustes", "Buscar un ajuste", "", &rows, true, 1);
+    }
+
+    // páginas de widgets e inicio de sesión
+    {
+        use hypr_win::widget_draw::{Kind, Size};
+        let mut rows = vec![Row::new("Mostrar los widgets").subtitle("Detrás de las ventanas").hint("Visibles").glyph('\u{E7B3}', 0x0A84FF).section("Escritorio")];
+        for k in Kind::ALL {
+            let (g, rgb) = k.glyph();
+            for &s in k.sizes().iter().take(1) {
+                let _: Size = s;
+                rows.push(Row::new(k.label()).subtitle("Tamaño inicial").hint("Añadir").glyph(g, rgb).section("Añadir"));
+            }
+        }
+        save_palette("menu-widgets", "Widgets", "Buscar un widget", "", &rows, true, 1);
+        let login = vec![
+            Row::new("Imagen de la pantalla de bloqueo").subtitle("Windows Spotlight u otra").glyph('\u{E91B}', 0x8E8E93).section("Ahora"),
+            Row::new("Usar el fondo actual del escritorio").subtitle("También en el inicio de sesión").glyph('\u{E7F4}', 0x0A84FF).section("Imagen"),
+            Row::new("Fondo nítido en el inicio de sesión").subtitle("Directiva de Windows; pide administrador").hint("Desactivado").glyph('\u{E7B3}', 0xBF5AF2).section("Directiva"),
+            Row::new("El diseño lo dibuja Windows").subtitle("No se puede sustituir con APIs seguras").glyph('\u{E946}', 0x8E8E93).section("Límites"),
+        ];
+        save_palette("menu-login", "Inicio de sesión", "Inicio de sesión", "", &login, true, 1);
+    }
+
+    // widgets de escritorio
+    {
+        use hypr_win::widget_draw::{self as wd, Day, Kind, Media, Now, Stats, Weather, WFonts};
+        let wf = WFonts::new(&theme).unwrap();
+        let now = Now { year: 2026, month: 10, day: 29, weekday: 3, hour: 19, min: 45, sec: 12 };
+        let shortcuts: Vec<(String, String)> = cfg
+            .bindings()
+            .unwrap()
+            .iter()
+            .zip(cfg.binds.iter())
+            .take(11)
+            .map(|(b, raw)| (raw.split(',').next().unwrap_or("").trim().to_string(), hypr_win::keybinds::describe(&b.action)))
+            .collect();
+        let data = wd::Data {
+            stats: Stats { cpu: 34.0, mem_pct: 62.0, mem_used_gb: 9.8, mem_total_gb: 16.0, disk_pct: 71.0, disk_free_gb: 142.0, net_down: 2.4 * 1024.0 * 1024.0, net_up: 120.0 * 1024.0 },
+            weather: Some(Weather {
+                city: "Madrid".into(),
+                temp: 21,
+                code: 2,
+                days: vec![
+                    Day { label: "Vie".into(), hi: 23, lo: 12, code: 0 },
+                    Day { label: "Sáb".into(), hi: 19, lo: 11, code: 63 },
+                    Day { label: "Dom".into(), hi: 17, lo: 9, code: 3 },
+                ],
+            }),
+            media: Some(Media { title: "Blinding Lights".into(), artist: "The Weeknd".into(), playing: true, thumb: None }),
+            note: "Comprar leche, llamar al dentista y preparar la presentación del viernes. Revisar el correo antes de las 10.".into(),
+            shortcuts,
+            city: "Madrid".into(),
+        };
+        for kind in Kind::ALL {
+            for &size in kind.sizes() {
+                let (w, h) = wd::canvas_size(size);
+                let mut c = Canvas::new(w, h).unwrap();
+                wd::render(&mut c, &theme, &wf, kind, size, &data, &now, None);
+                save(&c, &format!("{dir}/widget-{:?}-{}{suffix}.png", kind, size.label()).to_lowercase());
+            }
+        }
+    }
+
+    // notificaciones de instalación en segundo plano
+    {
+        use hypr_win::toast::{self, ToastView};
+        let tf = toast::Fonts::new(&theme).unwrap();
+        let views = [
+            ToastView { glyph: '\u{E896}', rgb: toast::BLUE, title: "Instalando Visual Studio Code", subtitle: "en segundo plano · winget" },
+            ToastView { glyph: '\u{E73E}', rgb: toast::GREEN, title: "Git instalado", subtitle: "Ya aparece en el lanzador" },
+            ToastView { glyph: '\u{E783}', rgb: toast::RED, title: "Falló: instalando Zoom", subtitle: "No se encontró un instalador aplicable" },
+        ];
+        let (w, h) = toast::canvas_size(views.len());
+        let mut c = Canvas::new(w, h).unwrap();
+        toast::render(&mut c, &theme, &tf, &views);
+        save(&c, &format!("{dir}/toast{suffix}.png"));
+    }
+
     // dock con iconos reales del sistema
     let mut shown: Vec<(String, Option<icons::Icon>, bool)> = Vec::new();
     for q in cfg.dock.pinned.iter().map(String::as_str).chain(["Visual Studio Code", "Notepad"]) {
         if let Some(&i) = search::rank(q, &all_names, 1).first() {
             let e = &entries[i];
-            shown.push((e.name.clone(), icons::from_apps_folder(&e.id), shown.len().is_multiple_of(2)));
+            // los estilos `mono` y `accent` recolorean el icono, igual que hace el dock real
+            let tint = match theme.app_icons.as_str() {
+                "mono" => Some(theme.fg),
+                "accent" => Some(theme.accent),
+                _ => None,
+            };
+            let icon = icons::from_apps_folder(&e.id).map(|i| tint.and_then(|t| i.tinted(t)).unwrap_or(i));
+            shown.push((e.name.clone(), icon, shown.len().is_multiple_of(2)));
         }
     }
     let dfonts = dock::Fonts::new(&theme).unwrap();

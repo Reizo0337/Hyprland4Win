@@ -55,6 +55,8 @@ pub enum Action {
     Panel,
     /// Abre o cierra el menú del sistema (atajos, instalar, apps web...).
     Menu,
+    /// Trae los widgets de escritorio al frente (o los vuelve a dejar detrás).
+    Widgets,
     /// No hace nada: solo captura la combinación para que Windows no la reciba.
     None,
 }
@@ -175,6 +177,7 @@ pub fn parse_binding(s: &str) -> Result<Binding, String> {
         "launcher" => Action::Launcher,
         "panel" => Action::Panel,
         "menu" => Action::Menu,
+        "widgets" => Action::Widgets,
         "none" => Action::None,
         other => return Err(format!("acción desconocida: '{other}'")),
     };
@@ -349,6 +352,11 @@ pub fn install_hook(target: HWND, binds: &[Binding], block_start: bool) -> Resul
     }
 }
 
+/// Activa o desactiva en vivo el bloqueo de la tecla Win sola (menú Inicio).
+pub fn set_block_start(on: bool) {
+    HOOK.with(|h| h.borrow_mut().block_start = on);
+}
+
 /// Activa o desactiva el modo captura de atajos del hook.
 pub fn set_capture(on: bool) {
     HOOK.with(|h| h.borrow_mut().capture = on);
@@ -425,6 +433,7 @@ pub fn describe(a: &Action) -> String {
         Action::Launcher => "Buscar aplicaciones".into(),
         Action::Panel => "Panel de control".into(),
         Action::Menu => "Menú".into(),
+        Action::Widgets => "Mostrar los widgets".into(),
         Action::Quit => "Salir de hypr-win".into(),
         Action::None => "Bloquear un atajo de Windows".into(),
     }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use hypr_win::config::Config;
-use hypr_win::{app, apps, bar, dock, keybinds, launcher, panel, window};
+use hypr_win::{app, apps, bar, dock, keybinds, launcher, panel, toast, widgets, window};
 use windows::core::BOOL;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
@@ -65,10 +65,12 @@ fn run() -> Result<(), String> {
     let mut mons = window::monitors();
     mons.truncate(cfg.general.workspaces);
     println!("monitores gestionados: {}", mons.len());
-    let bars = bar::create_all(&cfg.bar, cfg.general.workspaces, &mons)?;
-    let main_hwnd: HWND = bars[0];
+    let main_hwnd: HWND = bar::create_all(&cfg.bar, cfg.general.workspaces, &mons)?;
     launcher::create(&cfg.bar)?;
     panel::create(&cfg.bar)?;
+    if let Some(m) = mons.first() {
+        toast::create(&cfg.bar, m.rect, bar::height_px())?;
+    }
     apps::start_indexing();
     // Las barras se registran primero para que el área de trabajo de cada monitor ya las excluya.
     bar::register_all();
@@ -77,10 +79,17 @@ fn run() -> Result<(), String> {
     let cfg_workspaces = cfg.general.workspaces;
     let bar_cfg = cfg.bar.clone();
     app::install(app::build(cfg, window::monitors())?);
+    {
+        let mons: Vec<_> = window::monitors().iter().map(|m| (m.id, m.rect)).collect();
+        widgets::create(&bar_cfg, &mons)?;
+        unsafe {
+            SetTimer(Some(main_hwnd), bar::TIMER_WIDGETS, 1000, None);
+        }
+    }
     if dock_cfg.enabled {
-        let mut rects: Vec<_> = window::monitors().iter().map(|m| m.rect).collect();
-        rects.truncate(cfg_workspaces);
-        dock::create(&bar_cfg, &dock_cfg, &rects)?;
+        let mut mons: Vec<_> = window::monitors().iter().map(|m| (m.id, m.rect)).collect();
+        mons.truncate(cfg_workspaces);
+        dock::create(&bar_cfg, &dock_cfg, &mons)?;
     }
 
     let binds = app::bindings();

@@ -36,7 +36,7 @@ pub struct ToastView<'a> {
 pub struct Fonts {
     title: Font,
     sub: Font,
-    glyph: Font,
+    glyph: crate::iconset::IconFont,
 }
 
 impl Fonts {
@@ -45,7 +45,7 @@ impl Fonts {
         Some(Fonts {
             title: Font::new(&th.font, b * 1.05, true)?,
             sub: Font::new(&th.font, b * 0.9, false)?,
-            glyph: Font::with_fallbacks(&["Segoe Fluent Icons", "Segoe MDL2 Assets"], b * 1.25, false)?,
+            glyph: crate::iconset::IconFont::new(&th.icons, b * 1.25)?,
         })
     }
 }
@@ -78,7 +78,7 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, toasts: &[ToastView]) {
         c.card(card, px(16.0), th.bg, 0xF0, th.fg);
         let tile = FRect::new(card.x + px(14.0), card.y + (g.card_h - px(40.0)) / 2.0, px(40.0), px(40.0));
         c.fill_round(tile, px(10.0), argb(rgb_to_colorref(t.rgb), 255));
-        c.text(&f.glyph, &t.glyph.to_string(), tile, argb(0xFFFFFF, 255), Align::Center);
+        f.glyph.draw(c, t.glyph, tile, argb(0xFFFFFF, 255));
         let tx = tile.x + tile.w + px(14.0);
         let w = card.x + card.w - tx - px(14.0);
         c.text(&f.title, t.title, FRect::new(tx, card.y + px(10.0), w, px(24.0)), argb(th.fg, 255), Align::Left);
@@ -184,6 +184,32 @@ pub fn create(cfg: &Bar, mon: Rect, bar_h: i32) -> Result<(), String> {
         HWND_SLOT.store(hwnd.0 as isize, Ordering::Relaxed);
         S.with(|s| *s.borrow_mut() = Some(State { hwnd, theme, fonts, toasts: Vec::new(), mon, bar_h, canvas: None }));
     }
+    Ok(())
+}
+
+/// Monitor donde aparecen las notificaciones (el principal); si cambia, se recolocan.
+pub fn set_monitor(mon: Rect) {
+    let _ = with(|s| {
+        if s.mon != mon {
+            s.mon = mon;
+            if !s.toasts.is_empty() {
+                s.redraw();
+            }
+        }
+    });
+}
+
+/// Cambia colores y fuente sin reiniciar.
+pub fn set_theme(cfg: &Bar) -> Result<(), String> {
+    let theme = Theme::from_cfg(cfg)?;
+    let fonts = Fonts::new(&theme).ok_or("no se pudo crear la fuente de las notificaciones")?;
+    let _ = with(|s| {
+        s.theme = theme;
+        s.fonts = fonts;
+        if !s.toasts.is_empty() {
+            s.redraw();
+        }
+    });
     Ok(())
 }
 

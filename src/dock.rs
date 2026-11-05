@@ -183,6 +183,27 @@ impl Fonts {
     }
 }
 
+/// Mezcla dos COLORREF (`t` = 0 es `a`, 1 es `b`).
+fn mix(a: u32, b: u32, t: f32) -> u32 {
+    let ch = |s: u32| {
+        let (x, y) = (((a >> s) & 0xff) as f32, ((b >> s) & 0xff) as f32);
+        (x + (y - x) * t).round() as u32
+    };
+    ch(16) << 16 | ch(8) << 8 | ch(0)
+}
+
+/// Un icono de aplicación según el estilo del tema: en `tile` va sobre una ficha redondeada.
+fn draw_app_icon(c: &mut Canvas, th: &Theme, icon: &Icon, rect: FRect) {
+    if th.app_icons.eq_ignore_ascii_case("tile") {
+        let radius = rect.w * 0.24;
+        c.fill_round(rect, radius, argb(mix(th.bg, th.fg, 0.12), 255));
+        c.stroke_round(rect.grow(-0.5), radius, 1.0, argb(th.fg, 55));
+        c.draw_icon(icon, rect.grow(-rect.w * 0.17));
+    } else {
+        c.draw_icon(icon, rect);
+    }
+}
+
 /// Dibuja el dock. `cursor` es la x del ratón en el lienzo. Devuelve la lista de zonas (x, ancho, índice).
 pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, m: &Metrics, items: &[ItemView], cursor: Option<f32>, amount: f32) -> Vec<(f32, f32, usize)> {
     c.clear();
@@ -207,7 +228,7 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, m: &Metrics, items: &[ItemV
         let side = m.size * slot.scale;
         let rect = FRect::new(sx + m.gap / 2.0, baseline - side - item.bounce, side, side);
         match item.icon {
-            Some(icon) => c.draw_icon(icon, rect),
+            Some(icon) => draw_app_icon(c, th, icon, rect),
             None => {
                 c.fill_round(rect, side * 0.22, argb(tile_color(item.name), 255));
                 let letter: String =
@@ -253,6 +274,8 @@ struct Item {
 /// Una ventana del dock (hay una por monitor); el contenido es compartido.
 struct Win {
     hwnd: HWND,
+    /// Monitor al que pertenece (`MonitorInfo::id`).
+    id: u64,
     mon: Rect,
     canvas: Option<Canvas>,
     zones: Vec<(f32, f32, usize)>,
@@ -282,6 +305,8 @@ struct Dock {
     show_running: bool,
     items: Vec<Item>,
     icons: HashMap<String, Option<Icon>>,
+    /// Los mismos iconos recoloreados (estilos `mono` y `accent`).
+    styled: HashMap<String, Option<Icon>>,
     running: Vec<Running>,
     pinned_ready: bool,
     autohide: bool,
@@ -297,7 +322,7 @@ fn with<R>(f: impl FnOnce(&mut Dock) -> R) -> Option<R> {
 }
 
 /// Crea un dock en cada monitor de `mons` (mismo contenido; magnificación independiente).
-pub fn create(bar_cfg: &Bar, cfg: &DockCfg, mons: &[Rect]) -> Result<(), String> {
+pub fn create(bar_cfg: &Bar, cfg: &DockCfg, mons: &[(u64, Rect)]) -> Result<(), String> {
     let theme = Theme::from_cfg(bar_cfg)?;
     let fonts = Fonts::new(&theme).ok_or("no se pudo crear la fuente del dock")?;
     let mut wins = Vec::new();
@@ -315,40 +340,8 @@ pub fn create(bar_cfg: &Bar, cfg: &DockCfg, mons: &[Rect]) -> Result<(), String>
         if RegisterClassExW(&wc) == 0 {
             return Err("RegisterClassExW (dock) falló".into());
         }
-        for &mon in mons {
-            let hwnd = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-                PCWSTR(class.as_ptr()),
-                PCWSTR::null(),
-                WS_POPUP,
-                0,
-                0,
-                10,
-                10,
-                None,
-                None,
-                Some(inst.into()),
-                None,
-            )
-            .map_err(|e| e.to_string())?;
-            wins.push(Win {
-                hwnd,
-                mon,
-                canvas: None,
-                zones: Vec::new(),
-                cursor: None,
-                amount: 0.0,
-                target: 0.0,
-                tracking: false,
-                timer_on: false,
-                shown: 1.0,
-                show_target: 1.0,
-                visible: false,
-                busy: false,
-                revealed: false,
-                dwell_ms: 0,
-                leave_ms: 0,
-            });
+        for &(id, mon) in mons {
+            wins.push(new_win(id, mon)?);
         }
     }
     D.with(|s| {
@@ -360,6 +353,7 @@ pub fn create(bar_cfg: &Bar, cfg: &DockCfg, mons: &[Rect]) -> Result<(), String>
             show_running: cfg.show_running,
             items: Vec::new(),
             icons: HashMap::new(),
+            styled: HashMap::new(),
             running: Vec::new(),
             pinned_ready: false,
             autohide: cfg.autohide,
@@ -378,6 +372,48 @@ pub fn create(bar_cfg: &Bar, cfg: &DockCfg, mons: &[Rect]) -> Result<(), String>
         }
     });
     Ok(())
+}
+
+/// Crea la ventana del dock de un monitor (la clase ya está registrada).
+fn new_win(id: u64, mon: Rect) -> Result<Win, String> {
+    unsafe {
+        let inst = GetModuleHandleW(None).map_err(|e| e.to_string())?;
+        let class = HSTRING::from(CLASS_NAME);
+        let hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            PCWSTR(class.as_ptr()),
+            PCWSTR::null(),
+            WS_POPUP,
+            0,
+            0,
+            10,
+            10,
+            None,
+            None,
+            Some(inst.into()),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Win {
+            hwnd,
+            id,
+            mon,
+            canvas: None,
+            zones: Vec::new(),
+            cursor: None,
+            amount: 0.0,
+            target: 0.0,
+            tracking: false,
+            timer_on: false,
+            shown: 1.0,
+            show_target: 1.0,
+            visible: false,
+            busy: false,
+            revealed: false,
+            dwell_ms: 0,
+            leave_ms: 0,
+        })
+    }
 }
 
 /// Actualiza las apps abiertas; solo redibuja si cambió algo.
@@ -418,19 +454,96 @@ pub fn refresh() {
     });
 }
 
-/// Reposiciona los docks (cambio de resolución o de disposición de los monitores).
-pub fn set_monitors(mons: &[Rect]) {
+/// Aplica en vivo los ajustes del dock: tamaño, magnificación, apps fijadas, apps abiertas y auto-ocultado.
+pub fn reconfigure(cfg: &DockCfg) {
     let _ = with(|d| {
-        let mut changed = false;
-        for (w, &m) in d.wins.iter_mut().zip(mons) {
-            if w.mon != m {
-                w.mon = m;
-                changed = true;
+        let was_autohide = d.autohide;
+        d.metrics = Metrics::new(cfg);
+        d.pinned_queries = cfg.pinned.clone();
+        d.show_running = cfg.show_running;
+        d.autohide = cfg.autohide;
+        let enable = d.autohide && !was_autohide;
+        let disable = !d.autohide && was_autohide;
+        for w in d.wins.iter_mut() {
+            w.canvas = None;
+            if enable {
+                unsafe {
+                    SetTimer(Some(w.hwnd), TIMER_EDGE, EDGE_POLL_MS, None);
+                }
+            }
+            if disable {
+                unsafe {
+                    let _ = KillTimer(Some(w.hwnd), TIMER_EDGE);
+                }
+                w.revealed = false;
+                w.shown = 1.0;
+                w.show_target = 1.0;
             }
         }
-        if changed {
-            d.redraw();
+        for wi in 0..d.wins.len() {
+            d.retarget(wi);
         }
+        d.pinned_ready = false;
+        d.rebuild();
+        d.redraw();
+    });
+}
+
+/// Cambia colores y fuente sin reiniciar.
+pub fn set_theme(cfg: &Bar) -> Result<(), String> {
+    let theme = Theme::from_cfg(cfg)?;
+    let fonts = Fonts::new(&theme).ok_or("no se pudo crear la fuente del dock")?;
+    let _ = with(|d| {
+        d.theme = theme;
+        d.fonts = fonts;
+        d.restyle();
+        d.redraw();
+    });
+    Ok(())
+}
+
+/// Vuelve a pedir todos los iconos (por ejemplo, tras dejar iconos propios en la carpeta).
+pub fn reload_icons() {
+    let _ = with(|d| {
+        d.icons.clear();
+        d.rebuild();
+        d.redraw();
+    });
+}
+
+/// Adapta los docks a los monitores actuales sin reiniciar: reposiciona los que siguen, crea los de los
+/// monitores nuevos y quita los de los desconectados. Deja `wins[i]` en el monitor `mons[i]`.
+pub fn set_monitors(mons: &[(u64, Rect)]) {
+    let _ = with(|d| {
+        let old = std::mem::take(&mut d.wins);
+        let mut old: Vec<Option<Win>> = old.into_iter().map(Some).collect();
+        let mut wins = Vec::new();
+        for &(id, rect) in mons {
+            match old.iter_mut().find(|w| w.as_ref().is_some_and(|w| w.id == id)).and_then(Option::take) {
+                Some(mut w) => {
+                    w.mon = rect;
+                    wins.push(w);
+                }
+                None => match new_win(id, rect) {
+                    Ok(w) => {
+                        if d.autohide {
+                            unsafe {
+                                SetTimer(Some(w.hwnd), TIMER_EDGE, EDGE_POLL_MS, None);
+                            }
+                        }
+                        wins.push(w);
+                    }
+                    Err(e) => eprintln!("aviso: no se pudo crear el dock del monitor nuevo: {e}"),
+                },
+            }
+        }
+        for w in old.into_iter().flatten() {
+            unsafe {
+                let _ = DestroyWindow(w.hwnd);
+            }
+        }
+        d.wins = wins;
+        d.redraw();
     });
 }
 
@@ -502,15 +615,29 @@ impl Dock {
         // iconos que aún no están en la caché (se piden una sola vez)
         for it in items.iter().filter(|i| !i.separator) {
             if !self.icons.contains_key(&it.icon_key) {
-                let icon = it
-                    .id
-                    .as_deref()
-                    .and_then(icons::from_apps_folder)
+                // un icono propio del usuario manda sobre el de la aplicación
+                let icon = icons::custom_for(&it.name, it.exe.as_deref())
+                    .or_else(|| it.id.as_deref().and_then(icons::from_apps_folder))
                     .or_else(|| it.exe.as_deref().and_then(icons::from_path));
                 self.icons.insert(it.icon_key.clone(), icon);
             }
         }
         self.items = items;
+        self.restyle();
+    }
+
+    /// Recolorea los iconos si el estilo del tema lo pide (`mono`, `accent`).
+    fn restyle(&mut self) {
+        let tint = match self.theme.app_icons.to_lowercase().as_str() {
+            "mono" => Some(self.theme.fg),
+            "accent" => Some(self.theme.accent),
+            _ => None,
+        };
+        self.styled.clear();
+        let Some(tint) = tint else { return };
+        for (key, icon) in &self.icons {
+            self.styled.insert(key.clone(), icon.as_ref().and_then(|i| i.tinted(tint)));
+        }
     }
 
     fn bouncing(&self) -> bool {
@@ -529,7 +656,7 @@ impl Dock {
     }
 
     fn redraw_win(&mut self, wi: usize) {
-        let Dock { items, icons, theme, fonts, metrics, wins, .. } = self;
+        let Dock { items, icons, styled, theme, fonts, metrics, wins, .. } = self;
         let win = &mut wins[wi];
         if win.shown <= 0.005 {
             if win.visible {
@@ -551,7 +678,7 @@ impl Dock {
             .iter()
             .map(|it| ItemView {
                 name: &it.name,
-                icon: icons.get(&it.icon_key).and_then(|i| i.as_ref()),
+                icon: styled.get(&it.icon_key).and_then(|i| i.as_ref()).or_else(|| icons.get(&it.icon_key).and_then(|i| i.as_ref())),
                 running: !it.hwnds.is_empty(),
                 bounce: it.bounce.map_or(0.0, |t| bounce_offset(t.elapsed().as_secs_f32(), metrics.size)),
                 separator: it.separator,

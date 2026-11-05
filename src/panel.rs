@@ -190,7 +190,7 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, v: &View) -> Vec<(FRect, Hi
                 let tile = FRect::new(left, y + px(10.0), px(36.0), px(36.0));
                 let on = st.present && st.enabled;
                 c.fill_ellipse(tile, argb(if on { th.accent } else { gray() }, 255));
-                glyphs::wifi(c, tile.x + px(8.0), tile.y + px(8.0), px(20.0), if st.ssid.is_some() { lit_from_signal(st.signal) } else { 0 }, !on, 0xFFFFFF);
+                glyphs::wifi(c, &th.icons, tile.x + px(8.0), tile.y + px(8.0), px(20.0), if st.ssid.is_some() { lit_from_signal(st.signal) } else { 0 }, !on, 0xFFFFFF);
                 let tx = tile.x + tile.w + px(12.0);
                 c.text(&f.title, "Wi-Fi", FRect::new(tx, y + px(6.0), px(160.0), px(24.0)), argb(th.fg, 255), Align::Left);
                 let sub = if !st.present {
@@ -219,13 +219,13 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, v: &View) -> Vec<(FRect, Hi
                 }
                 for (i, net) in v.networks.iter().take(n).enumerate() {
                     let ry = y + i as f32 * px(40.0);
-                    glyphs::wifi(c, left + px(2.0), ry + px(12.0), px(16.0), lit_from_signal(net.signal), false, th.fg);
+                    glyphs::wifi(c, &th.icons, left + px(2.0), ry + px(12.0), px(16.0), lit_from_signal(net.signal), false, th.fg);
                     let name_w = right - left - px(30.0) - px(26.0);
                     c.text(&f.row, &net.ssid, FRect::new(left + px(30.0), ry, name_w, px(40.0)), argb(th.fg, 255), Align::Left);
                     if net.connected {
-                        glyphs::check(c, right - px(18.0), ry + px(12.0), px(16.0), th.accent);
+                        glyphs::check(c, &th.icons, right - px(18.0), ry + px(12.0), px(16.0), th.accent);
                     } else if net.secured {
-                        glyphs::lock(c, right - px(15.0), ry + px(12.0), px(14.0), th.dim);
+                        glyphs::lock(c, &th.icons, right - px(15.0), ry + px(12.0), px(14.0), th.dim);
                     }
                     hits.push((FRect::new(card.x + px(6.0), ry, card.w - px(12.0), px(40.0)), Hit::Network(i)));
                 }
@@ -249,7 +249,7 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, v: &View) -> Vec<(FRect, Hi
                 let bt = &v.status.bluetooth;
                 let tile = FRect::new(left, y + px(10.0), px(36.0), px(36.0));
                 c.fill_ellipse(tile, argb(if bt.on { th.accent } else { gray() }, 255));
-                glyphs::bluetooth(c, tile.x + px(9.0), tile.y + px(8.0), px(20.0), 0xFFFFFF, 255);
+                glyphs::bluetooth(c, &th.icons, tile.x + px(9.0), tile.y + px(8.0), px(20.0), 0xFFFFFF, 255);
                 let tx = tile.x + tile.w + px(12.0);
                 c.text(&f.title, "Bluetooth", FRect::new(tx, y + px(6.0), px(160.0), px(24.0)), argb(th.fg, 255), Align::Left);
                 let sub = if !bt.present {
@@ -276,7 +276,7 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, v: &View) -> Vec<(FRect, Hi
             Block::SoundRow => {
                 let vol = v.status.volume.unwrap_or(Volume { level: 0.0, muted: true });
                 let icon = FRect::new(left, y + (bh - px(20.0)) / 2.0, px(20.0), px(20.0));
-                glyphs::speaker(c, icon.x, icon.y, icon.w, vol.level, vol.muted, th.fg);
+                glyphs::speaker(c, &th.icons, icon.x, icon.y, icon.w, vol.level, vol.muted, th.fg);
                 hits.push((icon.grow(px(6.0)), Hit::Mute));
                 let (tx0, tx1) = (left + px(36.0), right - px(44.0));
                 let ty = y + bh / 2.0;
@@ -295,7 +295,7 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, v: &View) -> Vec<(FRect, Hi
             }
             Block::Battery => {
                 if let Some(b) = v.status.battery {
-                    glyphs::battery(c, FRect::new(left, y + (bh - px(14.0)) / 2.0, px(30.0), px(14.0)), b.percent, b.charging, th.fg);
+                    glyphs::battery(c, &th.icons, FRect::new(left, y + (bh - px(14.0)) / 2.0, px(30.0), px(14.0)), b.percent, b.charging, th.fg);
                     c.text(&f.row, "Batería", FRect::new(left + px(42.0), y, px(110.0), bh), argb(th.fg, 255), Align::Left);
                     let state = if b.charging {
                         "Cargando"
@@ -436,6 +436,20 @@ pub fn create(cfg: &Bar) -> Result<(), String> {
             })
         });
     }
+    Ok(())
+}
+
+/// Cambia colores y fuente sin reiniciar.
+pub fn set_theme(cfg: &Bar) -> Result<(), String> {
+    let theme = Theme::from_cfg(cfg)?;
+    let fonts = Fonts::new(&theme).ok_or("no se pudo crear la fuente del panel")?;
+    let _ = with(|p| {
+        p.theme = theme;
+        p.fonts = fonts;
+        if unsafe { IsWindowVisible(p.hwnd).as_bool() } {
+            p.redraw();
+        }
+    });
     Ok(())
 }
 

@@ -15,11 +15,20 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+serde_json = "1"
 
 [dependencies.windows]
 version = "0.62"
 features = [
     "Win32_Foundation",
+    "Win32_Networking_WinInet",
+    "Media_Control",
+    "Win32_Storage_FileSystem",
+    "Win32_NetworkManagement_IpHelper",
+    "Storage_Streams",
+    "System_UserProfile",
+    "Storage",
+    "Win32_System_Registry",
     "Win32_System_Com_Urlmon",
     "Foundation_Collections",
     "Foundation",

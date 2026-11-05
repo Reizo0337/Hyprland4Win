@@ -12,9 +12,9 @@ use windows::Win32::Graphics::GdiPlus::{
     FillModeAlternate, FontStyleBold, FontStyleRegular, GdipAddPathArc, GdipAddPathRectangle, GdipClosePathFigure,
     GdipCreateBitmapFromScan0, GdipCreateFont, GdipCreateFontFamilyFromName, GdipCreatePath, GdipCreatePen1,
     GdipCreateSolidFill, GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont, GdipDeleteFontFamily,
-    GdipDeleteGraphics, GdipDeletePath, GdipDeletePen, GdipDeleteStringFormat, GdipDisposeImage, GdipDrawEllipse,
+    GdipDeleteGraphics, GdipDeletePath, GdipDeletePen, GdipDeleteStringFormat, GdipDisposeImage, GdipNewPrivateFontCollection, GdipPrivateAddMemoryFont, GpFontCollection, GdipAddPathString, GdipGetPathWorldBounds, GdipCreateMatrix, GdipTranslateMatrix, GdipTransformPath, GdipDeleteMatrix, MatrixOrderPrepend, GdipDrawEllipse,
     GdipDrawLine, GdipDrawPath, GdipDrawString, GdipFillEllipse, GdipFillPath, GdipGetImageGraphicsContext,
-    GdipMeasureString, GdipSetPenEndCap, GdipSetPenStartCap, GdipSetInterpolationMode, GdipSetPixelOffsetMode, GdipSetSmoothingMode, GdipDrawArc, GdipDrawImageRect, GdipFillPolygon, InterpolationModeHighQualityBicubic, PointF,
+    GdipMeasureString, GdipSetPenEndCap, GdipSetPenStartCap, GdipSetInterpolationMode, GdipSetPixelOffsetMode, GdipSetSmoothingMode, GdipDrawArc, GdipDrawImageRect, GdipSaveImageToFile, GdipFillPolygon, InterpolationModeHighQualityBicubic, PointF,
     GdipSetStringFormatAlign, GdipSetStringFormatFlags, GdipSetStringFormatLineAlign,
     GdipSetStringFormatTrimming, GdipSetTextRenderingHint, GdiplusStartup, GdiplusStartupInput, GpBitmap, GpBrush,
     GpFont, GpFontFamily, GpGraphics, GpImage, GpPath, GpStringFormat, LineCapRound, PixelOffsetModeHalf, RectF,
@@ -52,6 +52,10 @@ pub struct Theme {
     pub accent_text: u32,
     pub font: String,
     pub font_pt: f32,
+    /// Pack de iconos (`iconset`); vacío = los de Windows.
+    pub icons: String,
+    /// Estilo de los iconos de las aplicaciones del dock (`icons::APP_STYLES`); vacío = originales.
+    pub app_icons: String,
 }
 
 impl Theme {
@@ -65,6 +69,8 @@ impl Theme {
             accent_text: c(&cfg.accent_text)?,
             font: cfg.font.clone(),
             font_pt: cfg.font_size as f32,
+            icons: cfg.icons.clone(),
+            app_icons: cfg.app_icons.clone(),
         })
     }
 
@@ -116,6 +122,8 @@ pub(crate) fn start() {
 pub struct Font {
     family: *mut GpFontFamily,
     font: *mut GpFont,
+    /// Tamaño en px con el que se creó.
+    size: f32,
 }
 
 impl Font {
@@ -137,12 +145,51 @@ impl Font {
                 let mut font = null_mut();
                 let style = if bold { FontStyleBold.0 } else { FontStyleRegular.0 };
                 if GdipCreateFont(family, size, style, UnitPixel, &mut font) == Status(0) {
-                    return Some(Font { family, font });
+                    return Some(Font { family, font, size });
                 }
                 GdipDeleteFontFamily(family);
             }
         }
         None
+    }
+}
+
+/// Colecciones de fuentes privadas (una por fuente incrustada); GDI+ las usa sin instalar nada en Windows.
+static PRIVATE: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+impl Font {
+    /// Fuente incrustada en el programa (`data` debe vivir hasta el final: es un `include_bytes!`).
+    pub fn from_memory(family_name: &str, data: &'static [u8], size: f32) -> Option<Font> {
+        start();
+        unsafe {
+            let key = data.as_ptr() as usize;
+            let mut cache = PRIVATE.lock().ok()?;
+            let collection = match cache.iter().find(|(k, _)| *k == key) {
+                Some(&(_, c)) => c as *mut GpFontCollection,
+                None => {
+                    let mut c = null_mut();
+                    if GdipNewPrivateFontCollection(&mut c) != Status(0) || c.is_null() {
+                        return None;
+                    }
+                    if GdipPrivateAddMemoryFont(c, data.as_ptr() as *const c_void, data.len() as i32) != Status(0) {
+                        return None;
+                    }
+                    cache.push((key, c as usize));
+                    c
+                }
+            };
+            let mut family = null_mut();
+            let n = HSTRING::from(family_name);
+            if GdipCreateFontFamilyFromName(PCWSTR(n.as_ptr()), collection, &mut family) != Status(0) {
+                return None;
+            }
+            let mut font = null_mut();
+            if GdipCreateFont(family, size, FontStyleRegular.0, UnitPixel, &mut font) == Status(0) {
+                return Some(Font { family, font, size });
+            }
+            GdipDeleteFontFamily(family);
+            None
+        }
     }
 }
 
@@ -213,6 +260,20 @@ impl Canvas {
             }
             Some(Canvas { w, h, hdc, bmp, old, bits: bits as *mut u32, bitmap, g, fmt })
         }
+    }
+
+    /// Copia píxeles ARGB (de `w * h` elementos) al lienzo.
+    pub fn fill_from(&mut self, pixels: &[u32]) {
+        let n = pixels.len().min((self.w * self.h) as usize);
+        unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), self.bits, n) };
+    }
+
+    /// Guarda el lienzo como PNG (codificador de GDI+). `true` si se guardó.
+    pub fn save_png(&self, path: &str) -> bool {
+        // CLSID del codificador PNG de GDI+
+        let png = windows::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
+        let wide = HSTRING::from(path);
+        unsafe { GdipSaveImageToFile(self.bitmap as *mut windows::Win32::Graphics::GdiPlus::GpImage, PCWSTR(wide.as_ptr()), &png, std::ptr::null()) == Status(0) }
     }
 
     pub fn clear(&mut self) {
@@ -351,6 +412,37 @@ impl Canvas {
             GdipCreateSolidFill(color, &mut brush);
             GdipFillPolygon(self.g, brush as *mut GpBrush, v.as_ptr(), v.len() as i32, FillModeAlternate);
             GdipDeleteBrush(brush as *mut GpBrush);
+        }
+    }
+
+    /// Dibuja un glifo de una fuente de iconos centrado por su forma real (no por las métricas de línea de la
+    /// fuente, que cambian de un pack a otro) y sin recortes: si sobresale de `r`, sobresale por igual por todos lados.
+    pub fn glyph(&mut self, font: &Font, s: &str, r: FRect, color: u32) {
+        if s.is_empty() {
+            return;
+        }
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        let layout = RectF { X: 0.0, Y: 0.0, Width: font.size * 4.0, Height: font.size * 4.0 };
+        unsafe {
+            let mut path = null_mut();
+            GdipCreatePath(FillModeAlternate, &mut path);
+            GdipAddPathString(path, PCWSTR(wide.as_ptr()), wide.len() as i32, font.family, FontStyleRegular.0, font.size, &layout, self.fmt[0]);
+            let mut b = RectF::default();
+            GdipGetPathWorldBounds(path, &mut b, std::ptr::null_mut(), std::ptr::null_mut());
+            if b.Width > 0.0 && b.Height > 0.0 {
+                let dx = r.x + r.w / 2.0 - (b.X + b.Width / 2.0);
+                let dy = r.y + r.h / 2.0 - (b.Y + b.Height / 2.0);
+                let mut m = null_mut();
+                GdipCreateMatrix(&mut m);
+                GdipTranslateMatrix(m, dx, dy, MatrixOrderPrepend);
+                GdipTransformPath(path, m);
+                GdipDeleteMatrix(m);
+                let mut brush = null_mut();
+                GdipCreateSolidFill(color, &mut brush);
+                GdipFillPath(self.g, brush as *mut GpBrush, path);
+                GdipDeleteBrush(brush as *mut GpBrush);
+            }
+            GdipDeletePath(path);
         }
     }
 
