@@ -128,13 +128,28 @@ fn main() {
     let mut canvas = Canvas::new(1280, bar::BAR_PREVIEW_HEIGHT).unwrap();
     let occupied = [true, true, false, true, false, false, false, false, false];
     let clock = bar::clock_text();
-    let view = BarView { occupied: &occupied, hl: 1.0, focused: true, title: "hypr-win — Visual Studio Code", right: &clock, status: &status, bubbles: cfg.bar.style == "bubbles" };
-    bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &view);
+    let mk = |bubbles: bool, music: Option<bar::MusicView<'static>>| BarView {
+        occupied: &occupied,
+        hl: 1.0,
+        focused: true,
+        title: "hypr-win — Visual Studio Code",
+        right: &clock,
+        status: &status,
+        bubbles,
+        music,
+    };
+    bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &mk(cfg.bar.style == "bubbles", None));
     save(&canvas, &format!("{dir}/bar{suffix}.png"));
     // el diseño de burbujas (Minimal 2), sea cual sea el configurado
-    let bubbles = BarView { bubbles: true, ..view };
-    bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &bubbles);
+    bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &mk(true, None));
     save(&canvas, &format!("{dir}/bar-bubbles{suffix}.png"));
+    // con música sonando, en varios instantes de la animación (la onda se mueve)
+    for (bubbles, name) in [(false, "bar"), (true, "bar-bubbles")] {
+        for (k, t) in [0.4f32, 1.4, 2.6].into_iter().enumerate() {
+            bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &mk(bubbles, Some(bar::MusicView { title: "Midnight City", t })));
+            save(&canvas, &format!("{dir}/{name}-music{k}{suffix}.png"));
+        }
+    }
 
     // paleta (Win+K y menú Win+Espacio)
     apps::start_indexing();
@@ -425,5 +440,18 @@ fn main() {
     save(&c, &format!("{dir}/dock{suffix}.png"));
     dock::render(&mut c, &theme, &dfonts, &metrics, &items, Some(w as f32 / 2.0 - 40.0), 1.0);
     save(&c, &format!("{dir}/dock-hover{suffix}.png"));
+    // Alt+Tab propio (las mismas apps del dock, con títulos de ventana de ejemplo)
+    {
+        use hypr_win::switcher::{self, ItemView};
+        let sf = switcher::Fonts::new(&theme).unwrap();
+        let sm = switcher::Metrics::new();
+        let titles = ["hypr-win — Visual Studio Code", "Documentos", "Brave", "Terminal", "Spotify", "Notas", "Calculadora"];
+        let views: Vec<ItemView> = shown.iter().zip(titles).map(|((_, icon, _), t)| ItemView { title: t, icon: icon.as_ref(), minimized: t == "Notas" }).collect();
+        let cols = switcher::columns(views.len(), 1920, &sm);
+        let (sw, sh) = switcher::canvas_size(views.len(), cols, &sm);
+        let mut sc = Canvas::new(sw, sh).unwrap();
+        switcher::render(&mut sc, &theme, &sf, &sm, &views, 1, cols);
+        save(&sc, &format!("{dir}/switcher{suffix}.png"));
+    }
     println!("listo en {dir} ({} apps en el dock)", shown.len());
 }

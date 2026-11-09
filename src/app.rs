@@ -57,6 +57,13 @@ pub struct App {
     wallpaper_minutes: u32,
     /// Último workspace que mostraba cada monitor (por id), para devolvérselo si se vuelve a conectar.
     last_ws: HashMap<u64, usize>,
+    /// Ventanas por uso reciente (la más reciente primero): el orden del Alt+Tab.
+    mru: Vec<isize>,
+    /// Cambio de ventana en curso (Alt+Tab): la lista y la elegida.
+    switch: Option<(Vec<isize>, usize)>,
+    /// Ventanas minimizadas, con el escritorio en el que estaban: salen del mosaico pero siguen siendo apps
+    /// abiertas (Alt+Tab, dock). La más reciente al final.
+    minimized: Vec<(isize, usize)>,
 }
 
 /// Estado del foco por ratón: solo actúa si el cursor se movió y se detuvo un instante sobre la ventana.
@@ -110,6 +117,16 @@ pub fn on_bar_click(bar: usize, ws: usize) {
     });
 }
 
+/// Ventanas que ofrece ahora el Alt+Tab (por uso reciente, con las minimizadas).
+pub fn switch_list() -> Vec<isize> {
+    with(|a| a.switch_list()).unwrap_or_default()
+}
+
+/// Tecla del Alt+Tab propio (`keybinds::SWITCH_*`).
+pub fn on_switch(action: usize) {
+    with(|a| a.on_switch(action));
+}
+
 pub fn dock_activate(hwnds: Vec<isize>) {
     with(|a| a.dock_activate(hwnds));
 }
@@ -151,6 +168,7 @@ pub fn apply_theme(def: &crate::theme::ThemeDef) -> Result<(), String> {
     crate::palette::set_theme(&bar_cfg)?;
     crate::panel::set_theme(&bar_cfg)?;
     crate::toast::set_theme(&bar_cfg)?;
+    crate::switcher::set_theme(&bar_cfg)?;
     crate::widgets::set_theme(&bar_cfg)?;
     Ok(())
 }
@@ -224,7 +242,7 @@ pub fn build(cfg: Config, mons: Vec<MonitorInfo>) -> Result<App, String> {
     let mut mons = mons;
     mons.truncate(managed);
     claim_taskbar_space(&mut mons, cfg.general.hide_taskbar, dock_reserve(&cfg));
-    Ok(App { cfg, binds, model, originals: HashMap::new(), mons, mouse: MouseFocus::default(), fresh: HashSet::new(), identities: Default::default(), next_delay: 0, wallpaper_minutes: 0, last_ws: HashMap::new() })
+    Ok(App { cfg, binds, model, originals: HashMap::new(), mons, mouse: MouseFocus::default(), fresh: HashSet::new(), identities: Default::default(), next_delay: 0, wallpaper_minutes: 0, last_ws: HashMap::new(), mru: Vec::new(), switch: None, minimized: Vec::new() })
 }
 
 impl App {
@@ -345,6 +363,13 @@ impl App {
         for h in window::enumerate() {
             self.track(h);
         }
+        // las que ya estaban minimizadas al arrancar también cuentan (en el primer escritorio visible)
+        let home = self.model.mon_ws.first().copied().unwrap_or(0);
+        for h in window::enumerate_minimized() {
+            if self.model.find(h).is_none() && !self.minimized.iter().any(|&(x, _)| x == h) {
+                self.minimized.push((h, home));
+            }
+        }
         let fg = window::foreground();
         if let Some(ws) = self.model.find(fg) {
             self.model.ws[ws].focused = Some(fg);
@@ -411,9 +436,14 @@ impl App {
         if let Some(r) = window::normal_rect(window::to_hwnd(h)) {
             self.originals.insert(h, r);
         }
+        // marco propio: borde del color de acento y esquinas redondeadas (Windows 11)
+        if let Ok(border) = crate::config::parse_color(&self.cfg.bar.accent) {
+            window::style_frame(h, border, true);
+        }
         let (cx, cy) = cur.center();
         let mon = monitor_at(&self.mon_rects(), cx, cy);
         let ws = self.model.mon_ws[mon];
+        self.minimized.retain(|&(x, _)| x != h);
         self.model.add(h, ws);
         self.fresh.insert(h);
         Some(ws)
@@ -453,6 +483,17 @@ impl App {
                 }
             }
         }
+        for &(h, _) in &self.minimized {
+            if !window::is_alive(h) {
+                continue;
+            }
+            let ident = self.identities.borrow_mut().entry(h).or_insert_with(|| window::app_identity(h)).clone();
+            let Some(ident) = ident else { continue };
+            match groups.iter_mut().find(|g| g.ident.key() == ident.key()) {
+                Some(g) => g.hwnds.push(h),
+                None => groups.push(dock::Running { ident, hwnds: vec![h] }),
+            }
+        }
         dock::update(groups);
         // auto-ocultado: el dock se esconde en los monitores que tienen ventanas
         let busy: Vec<bool> = self.model.mon_ws.iter().map(|&ws| !self.model.ws[ws].windows.is_empty()).collect();
@@ -464,7 +505,25 @@ impl App {
         let fg = window::foreground();
         let pos = hwnds.iter().position(|&h| h == fg);
         let Some(&h) = hwnds.get(pos.map_or(0, |p| (p + 1) % hwnds.len())) else { return };
-        let Some(ws) = self.model.find(h) else { return };
+        self.activate_window(h);
+    }
+
+    /// Lleva el foco a la ventana `h`; si su workspace no se ve, el monitor enfocado pasa a mostrarlo.
+    fn activate_window(&mut self, h: isize) {
+        let Some(ws) = self.model.find(h) else {
+            // minimizada: se restaura (en su escritorio, que se muestra si estaba oculto)
+            if let Some(&(_, ws)) = self.minimized.iter().find(|&&(x, _)| x == h) {
+                if !window::is_alive(h) {
+                    self.minimized.retain(|&(x, _)| x != h);
+                    return;
+                }
+                if ws < self.model.ws.len() && self.model.visible_on(ws).is_none() {
+                    self.show_workspace(ws);
+                }
+                window::focus(h); // restaura la ventana si está minimizada
+            }
+            return;
+        };
         self.model.ws[ws].focused = Some(h);
         match self.model.visible_on(ws) {
             Some(mon) => {
@@ -473,6 +532,87 @@ impl App {
                 self.update_bar();
             }
             None => self.show_workspace(ws),
+        }
+    }
+
+    /// Ventanas gestionadas por uso reciente: la activa primero (el Alt+Tab pasa a la siguiente).
+    fn switch_list(&self) -> Vec<isize> {
+        let is_min = |h: isize| self.minimized.iter().any(|&(x, _)| x == h) && window::is_alive(h);
+        let mut list: Vec<isize> = self.mru.iter().copied().filter(|&h| self.model.find(h).is_some() || is_min(h)).collect();
+        for ws in &self.model.ws {
+            for &h in &ws.windows {
+                if !list.contains(&h) {
+                    list.push(h);
+                }
+            }
+        }
+        for &(h, _) in self.minimized.iter().rev() {
+            if !list.contains(&h) && window::is_alive(h) {
+                list.push(h);
+            }
+        }
+        let fg = window::foreground();
+        if let Some(p) = list.iter().position(|&h| h == fg) {
+            let h = list.remove(p);
+            list.insert(0, h);
+        }
+        list
+    }
+
+    fn switch_spec(&self, h: isize) -> crate::switcher::ItemSpec {
+        let ident = self.identities.borrow_mut().entry(h).or_insert_with(|| window::app_identity(h)).clone();
+        let title = window::title(window::to_hwnd(h));
+        let minimized = self.model.find(h).is_none();
+        match ident {
+            Some(i) => crate::switcher::ItemSpec {
+                title: if title.trim().is_empty() { i.fallback_name() } else { title },
+                name: i.fallback_name(),
+                exe: Some(i.exe.clone()),
+                aumid: i.aumid.clone(),
+                minimized,
+            },
+            None => crate::switcher::ItemSpec { name: title.clone(), title, exe: None, aumid: None, minimized },
+        }
+    }
+
+    /// Alt+Tab propio: empieza (la ventana siguiente ya queda elegida), avanza, retrocede, confirma o cancela.
+    fn on_switch(&mut self, action: usize) {
+        use crate::keybinds::{SWITCH_CANCEL, SWITCH_CONFIRM, SWITCH_NEXT, SWITCH_PREV, SWITCH_START, SWITCH_START_BACK};
+        match action {
+            SWITCH_START | SWITCH_START_BACK => {
+                let list = self.switch_list();
+                if list.is_empty() {
+                    return;
+                }
+                let sel = if action == SWITCH_START { 1 % list.len() } else { list.len() - 1 };
+                let mut cursor = windows::Win32::Foundation::POINT::default();
+                unsafe {
+                    let _ = GetCursorPos(&mut cursor);
+                }
+                let mon = self.mons.get(monitor_at(&self.mon_rects(), cursor.x, cursor.y)).map_or(Rect::new(0, 0, 1920, 1080), |m| m.rect);
+                let specs: Vec<_> = list.iter().map(|&h| self.switch_spec(h)).collect();
+                crate::switcher::begin(specs, sel, mon);
+                self.switch = Some((list, sel));
+            }
+            SWITCH_NEXT | SWITCH_PREV => {
+                if let Some((list, sel)) = self.switch.as_mut() {
+                    *sel = crate::switcher::step_index(list.len(), *sel, if action == SWITCH_NEXT { 1 } else { -1 });
+                    crate::switcher::select(*sel);
+                }
+            }
+            SWITCH_CONFIRM => {
+                crate::switcher::end();
+                if let Some((list, sel)) = self.switch.take() {
+                    if let Some(&h) = list.get(sel) {
+                        self.activate_window(h);
+                    }
+                }
+            }
+            SWITCH_CANCEL => {
+                crate::switcher::end();
+                self.switch = None;
+            }
+            _ => {}
         }
     }
 
@@ -586,9 +726,24 @@ impl App {
                     self.update_bar();
                 }
             }
-            EVENT_OBJECT_DESTROY => self.untrack(h),
-            EVENT_OBJECT_HIDE | EVENT_SYSTEM_MINIMIZESTART => {
-                if event == EVENT_SYSTEM_MINIMIZESTART || !window::is_visible(h) {
+            EVENT_OBJECT_DESTROY => {
+                self.minimized.retain(|&(x, _)| x != h);
+                self.mru.retain(|&x| x != h);
+                self.untrack(h);
+            }
+            EVENT_SYSTEM_MINIMIZESTART => {
+                // sale del mosaico, pero se recuerda: sigue en el Alt+Tab y en el dock, y al restaurarla vuelve
+                if let Some(ws) = self.model.find(h) {
+                    self.minimized.retain(|&(x, _)| x != h);
+                    self.minimized.push((h, ws));
+                }
+                self.untrack(h);
+            }
+            EVENT_OBJECT_HIDE => {
+                // oculta de verdad (p. ej. enviada a la bandeja): se olvida del todo
+                if !window::is_visible(h) {
+                    self.minimized.retain(|&(x, _)| x != h);
+                    self.mru.retain(|&x| x != h);
                     self.untrack(h);
                 }
             }
@@ -598,6 +753,9 @@ impl App {
                     self.schedule_settle();
                 }
                 if let Some(ws) = self.model.find(h) {
+                    self.mru.retain(|&x| x != h);
+                    self.mru.insert(0, h);
+                    self.mru.truncate(64);
                     self.model.ws[ws].focused = Some(h);
                     match self.model.visible_on(ws) {
                         Some(mon) => {
@@ -645,6 +803,12 @@ impl App {
         let was_focused = self.model.ws[ws].focused == Some(h);
         self.model.remove(h);
         self.originals.remove(&h);
+        if !self.minimized.iter().any(|&(x, _)| x == h) {
+            self.mru.retain(|&x| x != h); // una minimizada conserva su sitio en el orden de uso reciente
+        }
+        if window::is_alive(h) {
+            window::reset_frame(h);
+        }
         self.identities.borrow_mut().remove(&h);
         animator::cancel(h);
         if let Some(mon) = self.model.visible_on(ws) {
@@ -778,6 +942,10 @@ impl App {
         let new = Config::parse(&text)?;
         let new_binds = if new.binds != self.cfg.binds { Some(new.bindings()?) } else { None };
         let old = std::mem::replace(&mut self.cfg, new);
+        // el cursor depende del tema y de los colores: se vuelve a generar (o se quita si el estilo es vacío)
+        if let Err(e) = crate::cursor::apply(&self.cfg.bar) {
+            eprintln!("aviso: no se pudo aplicar el cursor del tema: {e}");
+        }
 
         let mut restart = Vec::new();
         if old.general.workspaces != self.cfg.general.workspaces {
@@ -813,6 +981,7 @@ impl App {
             }
         }
         keybinds::set_block_start(block);
+        keybinds::set_alt_tab(self.cfg.general.alt_tab);
 
         // apariencia: colores, fuente y translucidez de toda la interfaz
         let bar_cfg = self.cfg.bar.clone();
@@ -821,6 +990,7 @@ impl App {
         crate::palette::set_theme(&bar_cfg)?;
         crate::panel::set_theme(&bar_cfg)?;
         crate::toast::set_theme(&bar_cfg)?;
+        crate::switcher::set_theme(&bar_cfg)?;
         crate::widgets::set_theme(&bar_cfg)?;
         if old.bar.height != bar_cfg.height {
             let mons = window::monitors();
@@ -960,6 +1130,7 @@ impl App {
             if !window::is_alive(h) {
                 continue;
             }
+            window::reset_frame(h);
             let visible =
                 Rect::new(orig.x + 40, orig.y + 40, (orig.w - 80).max(1), (orig.h - 80).max(1)).intersects(&screen);
             let target = if visible {

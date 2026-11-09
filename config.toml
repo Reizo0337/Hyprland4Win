@@ -71,6 +71,7 @@ focus_follows_mouse = true  # el foco sigue al ratón, sin hacer clic
 disable_windows_animations = false  # apaga la animación de minimizar/maximizar mientras corre (se restaura al salir)
 hide_taskbar = true    # oculta la barra de tareas de Windows (se restaura al salir; ver --restore-taskbar)
 block_start_menu = true  # la tecla Win sola ya no abre el menú Inicio (Win+R sigue funcionando)
+alt_tab = true         # Alt+Tab propio (lista de ventanas por uso reciente); false = el de Windows
 
 [bar]
 # Estilo macOS. La barra, el dock, el lanzador, el panel y los avisos comparten estos colores y la fuente.
@@ -94,7 +95,7 @@ font_size = 8         # puntos
 # Dock estilo macOS, centrado abajo en cada monitor. Reserva su espacio (el mosaico no lo tapa).
 enabled = true
 icon_size = 36         # px a 96 DPI
-magnification = 1    # escala del icono bajo el cursor; 1.0 la desactiva
+magnification = 1.6    # escala del icono bajo el cursor; 1.0 la desactiva
 autohide = true        # se oculta cuando hay ventanas en el monitor; aparece al dejar el ratón en el borde inferior
 show_running = true    # añade las apps abiertas que no están fijadas
 # Apps fijadas, por nombre (búsqueda difusa en la lista de aplicaciones; usa los nombres de tu idioma).

@@ -38,6 +38,8 @@ pub const TIMER_TASKBAR: usize = 6;
 const TIMER_STATUS: usize = 7;
 pub const TIMER_WALLPAPER: usize = 8;
 pub const TIMER_WIDGETS: usize = 9;
+/// Animación de la música (solo corre mientras suena algo).
+const TIMER_MUSIC: usize = 10;
 
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 
@@ -57,6 +59,47 @@ pub struct BarView<'a> {
     pub status: &'a Status,
     /// Estilo "bubbles": cada grupo en su propia burbuja y sin título de ventana.
     pub bubbles: bool,
+    /// Lo que suena ahora (si suena algo): se muestra en el centro.
+    pub music: Option<MusicView<'a>>,
+}
+
+/// Lo que suena y el instante de la animación.
+pub struct MusicView<'a> {
+    pub title: &'a str,
+    /// Segundos desde que empezó a sonar (mueve la onda).
+    pub t: f32,
+}
+
+/// Barras de la onda: alto relativo (0-1) de la barra `i` en el instante `t`.
+fn wave_level(i: usize, t: f32) -> f32 {
+    let v = 0.5 + 0.5 * (t * (5.0 + 1.7 * i as f32) + i as f32 * 1.3).sin();
+    0.28 + 0.72 * v
+}
+
+/// Pastilla de la música: onda animada + título.
+fn draw_music(c: &mut Canvas, th: &Theme, font: &Font, m: &MusicView, rect: FRect, fill: Option<u32>) {
+    let h = rect.h;
+    if let Some(f) = fill {
+        c.fill_round(rect, h / 2.0, f);
+    }
+    // onda
+    let pad = px(12.0);
+    let (bw, gap, n) = (px(2.2), px(1.6), 5usize);
+    let wave_w = n as f32 * bw + (n - 1) as f32 * gap;
+    let (wave_h, cy) = (h * 0.5, rect.y + h / 2.0);
+    for i in 0..n {
+        let bh = (wave_h * wave_level(i, m.t)).max(bw);
+        let x = rect.x + pad + i as f32 * (bw + gap);
+        c.fill_round(FRect::new(x, cy - bh / 2.0, bw, bh), bw / 2.0, argb(th.accent, 255));
+    }
+    let tx = rect.x + pad + wave_w + px(8.0);
+    c.text(font, m.title, FRect::new(tx, rect.y, (rect.x + rect.w - pad - tx).max(0.0), h), argb(th.fg, 255), Align::Left);
+}
+
+/// Ancho natural de la pastilla de la música (sin recortar).
+fn music_width(c: &mut Canvas, font: &Font, title: &str) -> f32 {
+    let (bw, gap, n) = (px(2.2), px(1.6), 5.0);
+    2.0 * px(12.0) + n * bw + (n - 1.0) * gap + px(8.0) + c.measure(font, title) + px(2.0)
 }
 
 /// Margen vertical de las burbujas, relleno interior y separación entre burbujas (px a 96 DPI).
@@ -183,10 +226,25 @@ pub fn render(c: &mut Canvas, th: &Theme, font: &Font, opacity: u8, v: &BarView)
     }
     let cluster = if v.bubbles { (sb_right - status_w - 2.0 * inset, sb_right) } else { (x - px(8.0), cluster_end) };
 
+    // lo que suena, en el centro: entre lo que haya a la izquierda y los iconos de estado
+    let tx = x0 + v.occupied.len() as f32 * slot + px(14.0);
+    let mut title_limit = cluster.0 - px(20.0);
+    if let Some(m) = &v.music {
+        let left_end = if v.bubbles { x0 + v.occupied.len() as f32 * slot + inset + px(BUBBLE_GAP * 2.0) } else { tx + px(80.0) };
+        let right_start = cluster.0 - px(if v.bubbles { BUBBLE_GAP * 2.0 } else { 12.0 });
+        let width = music_width(c, font, m.title).min(w * 0.34).min(right_start - left_end);
+        if width >= px(110.0) {
+            let height = if v.bubbles { bubble_h } else { h - 2.0 * px(4.0) };
+            let cx = (w / 2.0).clamp(left_end + width / 2.0, right_start - width / 2.0);
+            let rect = FRect::new(cx - width / 2.0, (h - height) / 2.0, width, height);
+            draw_music(c, th, font, m, rect, Some(if v.bubbles { fill } else { argb(th.fg, 14) }));
+            title_limit = title_limit.min(rect.x - px(14.0));
+        }
+    }
+
     // título entre los puntos de workspaces y los iconos de estado (la burbuja no lo muestra)
     if !v.bubbles {
-        let tx = x0 + v.occupied.len() as f32 * slot + px(14.0);
-        c.text(font, v.title, FRect::new(tx, 0.0, (cluster.0 - tx - px(20.0)).max(0.0), h), argb(th.fg, 255), Align::Left);
+        c.text(font, v.title, FRect::new(tx, 0.0, (title_limit - tx).max(0.0), h), argb(th.fg, 255), Align::Left);
     }
     cluster
 }
@@ -227,6 +285,9 @@ struct State {
     focused_mon: usize,
     status: Status,
     bubbles: bool,
+    /// Título de lo que suena ahora (`None` si no suena nada) y desde cuándo.
+    music: Option<String>,
+    music_since: std::time::Instant,
     bars: Vec<BarWin>,
 }
 
@@ -263,6 +324,8 @@ pub fn create_all(cfg: &Bar, workspaces: usize, mons: &[MonitorInfo]) -> Result<
             focused_mon: 0,
             status: status::poll(),
             bubbles: cfg.style == "bubbles",
+            music: None,
+            music_since: std::time::Instant::now(),
             bars: Vec::new(),
         })
     });
@@ -405,6 +468,36 @@ pub fn set_theme(cfg: &Bar) -> Result<(), String> {
     Ok(())
 }
 
+fn no_change() {}
+
+/// Mira si suena algo (cada segundo, desde el temporizador de los widgets): muestra u oculta la pastilla de la
+/// música y arranca o detiene su animación.
+pub fn update_music() {
+    crate::media::start(no_change);
+    let now = crate::media::latest().filter(|m| m.playing && !m.title.trim().is_empty()).map(|m| m.title.trim().to_string());
+    let playing = STATE.with(|s| {
+        let mut g = s.borrow_mut();
+        let st = g.as_mut()?;
+        if st.music == now {
+            return None;
+        }
+        if st.music.is_none() {
+            st.music_since = std::time::Instant::now();
+        }
+        st.music = now;
+        Some(st.music.is_some())
+    });
+    let Some(playing) = playing else { return };
+    unsafe {
+        if playing {
+            SetTimer(Some(hwnd()), TIMER_MUSIC, 33, None);
+        } else {
+            let _ = KillTimer(Some(hwnd()), TIMER_MUSIC);
+        }
+    }
+    redraw_all();
+}
+
 /// Vuelve a leer Wi-Fi, volumen y batería y redibuja (lo usa también el panel tras un cambio).
 pub fn refresh_status() {
     let s = status::poll();
@@ -427,14 +520,15 @@ fn redraw_all() {
     STATE.with(|s| {
         let mut g = s.borrow_mut();
         let Some(st) = g.as_mut() else { return };
-        let State { theme, font, opacity, height, occupied, focused_mon, status, bubbles, bars } = st;
+        let State { theme, font, opacity, height, occupied, focused_mon, status, bubbles, music, music_since, bars } = st;
+        let music_t = music_since.elapsed().as_secs_f32();
         for (i, b) in bars.iter_mut().enumerate() {
             let (w, h) = (b.mon.w, *height);
             if b.canvas.as_ref().is_none_or(|c| c.w != w || c.h != h) {
                 b.canvas = Canvas::new(w, h);
             }
             let Some(canvas) = b.canvas.as_mut() else { continue };
-            let view = BarView { occupied, hl: b.hl, focused: i == *focused_mon, title: &b.title, right: &clock, status, bubbles: *bubbles };
+            let view = BarView { occupied, hl: b.hl, focused: i == *focused_mon, title: &b.title, right: &clock, status, bubbles: *bubbles, music: music.as_deref().map(|title| MusicView { title, t: music_t }) };
             b.cluster = render(canvas, theme, font, *opacity, &view);
             canvas.present(b.hwnd, None);
         }
@@ -560,7 +654,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             match wp.0 {
                 TIMER_BAR => step_highlight(),
                 TIMER_WALLPAPER => crate::app::on_wallpaper_tick(),
-                TIMER_WIDGETS => crate::widgets::tick(),
+                TIMER_WIDGETS => {
+                    crate::widgets::tick();
+                    update_music();
+                }
+                TIMER_MUSIC => redraw_all(),
                 TIMER_STATUS => {
                     refresh_status();
                     crate::dock::refresh();
@@ -604,6 +702,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             crate::palette::on_capture(wp.0 as u32, lp.0 as u32);
             LRESULT(0)
         }
+        crate::keybinds::WM_SWITCH_KEY => {
+            crate::app::on_switch(wp.0);
+            LRESULT(0)
+        }
         crate::keybinds::WM_HOOK_KEY => {
             crate::app::on_hotkey(wp.0 as i32);
             LRESULT(0)
@@ -642,5 +744,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wave_stays_in_range_and_moves() {
+        let mut changed = false;
+        for i in 0..5 {
+            for k in 0..200 {
+                let t = k as f32 * 0.05;
+                let v = wave_level(i, t);
+                assert!((0.27..=1.01).contains(&v));
+                changed |= (v - wave_level(i, t + 0.2)).abs() > 0.05;
+            }
+        }
+        assert!(changed);
     }
 }

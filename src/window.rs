@@ -10,7 +10,8 @@ use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyS
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW};
 use windows::Win32::Graphics::Dwm::{
-    DwmFlush, DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    DwmFlush, DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
+    DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_ROUND,
 };
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Threading::{
@@ -89,8 +90,18 @@ const IGNORED_CLASSES: [&str; 6] = [
 ];
 
 pub fn is_manageable(h: HWND) -> bool {
+    manageable(h, false)
+}
+
+/// ¿Es una ventana de aplicación gestionable que está minimizada? (No ocupa hueco en el mosaico, pero sigue
+/// siendo una app abierta: sale en el Alt+Tab y en el dock.)
+pub fn is_minimized_app(h: HWND) -> bool {
+    unsafe { !h.0.is_null() && IsIconic(h).as_bool() && manageable(h, true) }
+}
+
+fn manageable(h: HWND, allow_minimized: bool) -> bool {
     unsafe {
-        if h.0.is_null() || !IsWindow(Some(h)).as_bool() || !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+        if h.0.is_null() || !IsWindow(Some(h)).as_bool() || !IsWindowVisible(h).as_bool() || (!allow_minimized && IsIconic(h).as_bool()) {
             return false;
         }
         if GetWindow(h, GW_OWNER).is_ok_and(|o| !o.0.is_null()) {
@@ -133,6 +144,22 @@ pub fn enumerate() -> Vec<isize> {
     }
     // EnumWindows va de arriba a abajo en z-order; el orden de mosaico va de atrás a delante.
     v.reverse();
+    v
+}
+
+/// Ventanas de aplicación minimizadas ahora mismo (las que ya lo estaban al arrancar).
+pub fn enumerate_minimized() -> Vec<isize> {
+    unsafe extern "system" fn cb(h: HWND, lp: LPARAM) -> BOOL {
+        let v = &mut *(lp.0 as *mut Vec<isize>);
+        if is_minimized_app(h) {
+            v.push(id(h));
+        }
+        BOOL(1)
+    }
+    let mut v: Vec<isize> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(cb), LPARAM(&mut v as *mut _ as isize));
+    }
     v
 }
 
@@ -448,6 +475,42 @@ pub fn is_alive(h: isize) -> bool {
 
 pub fn is_visible(h: isize) -> bool {
     unsafe { IsWindowVisible(to_hwnd(h)).as_bool() }
+}
+
+/// Color de borde que DWM usa cuando la ventana no tiene uno propio (`DWMWA_COLOR_DEFAULT`).
+const DWM_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
+
+/// Pinta el borde (COLORREF) y redondea las esquinas de una ventana de otro proceso (Windows 11 con DWM).
+/// Solo cambia el marco: los botones de minimizar, maximizar y cerrar siguen siendo los nativos.
+pub fn style_frame(h: isize, border: u32, round: bool) {
+    unsafe {
+        let hwnd = to_hwnd(h);
+        let color: u32 = border;
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color as *const u32 as *const c_void, 4);
+        let corner = if round { DWMWCP_ROUND } else { DWMWCP_DEFAULT };
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner as *const _ as *const c_void,
+            std::mem::size_of_val(&corner) as u32,
+        );
+    }
+}
+
+/// Devuelve el borde y las esquinas al estilo por defecto de Windows (al dejar de gestionar la ventana).
+pub fn reset_frame(h: isize) {
+    unsafe {
+        let hwnd = to_hwnd(h);
+        let color: u32 = DWM_COLOR_DEFAULT;
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color as *const u32 as *const c_void, 4);
+        let corner = DWMWCP_DEFAULT;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner as *const _ as *const c_void,
+            std::mem::size_of_val(&corner) as u32,
+        );
+    }
 }
 
 pub fn foreground() -> isize {

@@ -154,6 +154,8 @@ pub struct General {
     pub hide_taskbar: bool,
     /// Traga la tecla Win sola para que no abra el menú Inicio.
     pub block_start_menu: bool,
+    /// Alt+Tab propio de hypr-win en lugar del de Windows.
+    pub alt_tab: bool,
 }
 
 impl Default for General {
@@ -169,6 +171,7 @@ impl Default for General {
             disable_windows_animations: false,
             hide_taskbar: false,
             block_start_menu: false,
+            alt_tab: true,
         }
     }
 }
@@ -195,6 +198,8 @@ pub struct Bar {
     pub app_icons: String,
     /// Estilo de la barra: "bar" (franja continua, por defecto) o "bubbles" (grupos en burbujas separadas).
     pub style: String,
+    /// Cursor de flecha: "classic", "contrast", "accent", "soft" o vacío (los de Windows). Un tema lo define.
+    pub cursor: String,
 }
 
 impl Default for Bar {
@@ -213,6 +218,7 @@ impl Default for Bar {
             icons: String::new(),
             app_icons: String::new(),
             style: "bar".into(),
+            cursor: String::new(),
         }
     }
 }

@@ -33,6 +33,9 @@ pub struct ThemeDef {
     /// Fondo de escritorio asociado: "gradient", "solid" o la ruta de una imagen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallpaper: Option<String>,
+    /// Estilo del cursor de flecha (ver `cursor`): classic, contrast, accent o soft; vacío = los de Windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 fn def(name: &str, bg: &str, fg: &str, dim: &str, accent: &str, accent_text: &str) -> ThemeDef {
@@ -48,6 +51,7 @@ fn def(name: &str, bg: &str, fg: &str, dim: &str, accent: &str, accent_text: &st
         icons: None,
         app_icons: None,
         wallpaper: Some("gradient".into()),
+        cursor: None,
     }
 }
 
@@ -56,7 +60,23 @@ pub fn builtins() -> Vec<ThemeDef> {
     // (tema, pack de iconos): trazo fino para los sobrios, relleno para los más vivos
     let themed = |t: ThemeDef, icons: &str| ThemeDef { icons: Some(icons.into()), ..t };
     let styled = |t: ThemeDef, app_icons: &str| ThemeDef { app_icons: Some(app_icons.into()), ..t };
-    vec![
+    // cursor de cada tema, en el orden de la lista de abajo
+    // (con pack incluido: macOS, Capitaine y Rosé Pine; el resto, estilo generado con sus colores)
+    const CURSORS: [&str; 12] = [
+        "macos-white",
+        "macos-regular",
+        "accent",
+        "accent",
+        "capitaine-nord",
+        "accent",
+        "capitaine-gruvbox",
+        "soft",
+        "rosepine",
+        "contrast",
+        "soft",
+        "classic",
+    ];
+    let mut v = vec![
         themed(def("Apple Oscuro", "#1e1e20", "#f5f5f7", "#8e8e93", "#0a84ff", "#ffffff"), "phosphor"),
         themed(def("Apple Claro", "#f2f2f7", "#1d1d1f", "#86868b", "#007aff", "#ffffff"), "fluent"),
         styled(themed(def("Catppuccin Mocha", "#1e1e2e", "#cdd6f4", "#7f849c", "#89b4fa", "#1e1e2e"), "phosphor-fill"), "tile"),
@@ -69,7 +89,11 @@ pub fn builtins() -> Vec<ThemeDef> {
         def("Solarized Oscuro", "#002b36", "#93a1a1", "#586e75", "#268bd2", "#fdf6e3"),
         styled(themed(def("Everforest", "#2d353b", "#d3c6aa", "#859289", "#a7c080", "#2d353b"), "lucide"), "tile"),
         styled(themed(def("Grafito", "#111111", "#eeeeee", "#888888", "#ffffff", "#000000"), "phosphor-bold"), "mono"),
-    ]
+    ];
+    for (t, c) in v.iter_mut().zip(CURSORS) {
+        t.cursor = Some(c.into());
+    }
+    v
 }
 
 /// Carpeta de los temas del usuario.
@@ -134,6 +158,11 @@ pub fn validate(t: &ThemeDef) -> Result<(), String> {
             return Err(format!("estilo de iconos de aplicación desconocido: {s}"));
         }
     }
+    if let Some(c) = t.cursor.as_deref().filter(|c| !c.is_empty()) {
+        if !crate::cursor::STYLES.contains(&c) {
+            return Err(format!("estilo de cursor desconocido: {c}"));
+        }
+    }
     Ok(())
 }
 
@@ -170,6 +199,8 @@ pub fn apply_to_bar(t: &ThemeDef, bar: &mut Bar) {
     // los iconos son parte del tema: uno sin pack vuelve a los de Windows
     bar.icons = t.icons.clone().unwrap_or_default();
     bar.app_icons = t.app_icons.clone().unwrap_or_default();
+    // el cursor también es del tema: uno sin estilo vuelve al de Windows
+    bar.cursor = t.cursor.clone().unwrap_or_default();
 }
 
 /// Tema equivalente a la configuración actual de la barra.
@@ -186,6 +217,7 @@ pub fn from_bar(name: &str, bar: &Bar) -> ThemeDef {
         icons: Some(bar.icons.clone()),
         app_icons: Some(bar.app_icons.clone()),
         wallpaper: Some("gradient".into()),
+        cursor: Some(bar.cursor.clone()),
     }
 }
 

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use hypr_win::config::Config;
-use hypr_win::{app, apps, bar, dock, keybinds, launcher, panel, toast, widgets, window};
+use hypr_win::{app, apps, bar, cursor, dock, keybinds, launcher, panel, toast, widgets, window};
 use windows::core::BOOL;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
@@ -51,8 +51,12 @@ fn run() -> Result<(), String> {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
     let cfg = load_config()?;
+    if let Err(e) = cursor::apply(&cfg.bar) {
+        eprintln!("aviso: no se pudo aplicar el cursor del tema: {e}");
+    }
     let hide_taskbar = cfg.general.hide_taskbar;
     let block_start = cfg.general.block_start_menu;
+    let alt_tab = cfg.general.alt_tab;
     // Opcional: sin la animación de minimizar/maximizar de Windows (no se guarda; se restaura al salir).
     let restore_min_animate = if cfg.general.disable_windows_animations {
         let prev = window::min_animate();
@@ -68,6 +72,7 @@ fn run() -> Result<(), String> {
     let main_hwnd: HWND = bar::create_all(&cfg.bar, cfg.general.workspaces, &mons)?;
     launcher::create(&cfg.bar)?;
     panel::create(&cfg.bar)?;
+    hypr_win::switcher::create(&cfg.bar)?;
     if let Some(m) = mons.first() {
         toast::create(&cfg.bar, m.rect, bar::height_px())?;
     }
@@ -99,6 +104,7 @@ fn run() -> Result<(), String> {
     let key_hook = keybinds::install_hook(main_hwnd, &binds, block_start)
         .map_err(|e| eprintln!("aviso: hook de teclado no disponible, los atajos con Super no funcionarán: {e}"))
         .ok();
+    keybinds::set_alt_tab(alt_tab);
     let hooks = window::install_hooks(main_hwnd);
     unsafe {
         let _ = SetConsoleCtrlHandler(Some(ctrl_handler), true);
@@ -126,6 +132,7 @@ fn run() -> Result<(), String> {
     window::remove_hooks(hooks);
     keybinds::unregister_all(main_hwnd, app::binding_count());
     app::shutdown();
+    cursor::restore();
     if let Some(prev) = restore_min_animate {
         window::set_min_animate(prev);
     }
