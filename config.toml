@@ -101,6 +101,9 @@ show_running = true    # añade las apps abiertas que no están fijadas
 # Apps fijadas, por nombre (búsqueda difusa en la lista de aplicaciones; usa los nombres de tu idioma).
 pinned = ["Explorador", "Brave", "VSCode", "Claude", "AGY"]
 
+[updates]
+check = true          # buscar actualizaciones al arrancar (cada 24 h); instalar es siempre a petición, en Sistema
+
 [wallpaper]
 # Fondo de escritorio (Super+Espacio > Fondo de pantalla). Se aplica con la interfaz IDesktopWallpaper de Windows.
 dir = ""               # carpeta con tus imágenes; vacío = Imágenes\Wallpapers

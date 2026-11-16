@@ -14,6 +14,11 @@ const MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Descarga `url` y devuelve el cuerpo (bloquea; úsalo en un hilo).
 pub fn http_get(url: &str) -> Option<Vec<u8>> {
+    http_get_limited(url, MAX_BYTES)
+}
+
+/// Como `http_get` pero con otro tope de tamaño (para descargar el programa al actualizar).
+pub fn http_get_limited(url: &str, max_bytes: usize) -> Option<Vec<u8>> {
     unsafe {
         let session = InternetOpenW(w!("hypr-win"), INTERNET_OPEN_TYPE_PRECONFIG.0, None, None, 0);
         if session.is_null() {
@@ -35,7 +40,7 @@ pub fn http_get(url: &str) -> Option<Vec<u8>> {
                 break true;
             }
             body.extend_from_slice(&chunk[..read as usize]);
-            if body.len() > MAX_BYTES {
+            if body.len() > max_bytes {
                 break false;
             }
         };

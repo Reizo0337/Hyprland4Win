@@ -45,6 +45,8 @@ fn run() -> Result<(), String> {
         println!("barra de tareas restaurada");
         return Ok(());
     }
+    // si nos lanzó una actualización: esperar al proceso anterior y borrar su exe
+    hypr_win::updater::on_startup();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         // COM en el hilo de la interfaz: audio (Core Audio) e iconos del shell
@@ -55,6 +57,7 @@ fn run() -> Result<(), String> {
         eprintln!("aviso: no se pudo aplicar el cursor del tema: {e}");
     }
     let hide_taskbar = cfg.general.hide_taskbar;
+    let check_updates = cfg.updates.check;
     let block_start = cfg.general.block_start_menu;
     let alt_tab = cfg.general.alt_tab;
     // Opcional: sin la animación de minimizar/maximizar de Windows (no se guarda; se restaura al salir).
@@ -92,6 +95,7 @@ fn run() -> Result<(), String> {
         }
     }
     app::start_animated();
+    hypr_win::updater::check_on_start(check_updates);
     if dock_cfg.enabled {
         let mut mons: Vec<_> = window::monitors().iter().map(|m| (m.id, m.rect)).collect();
         mons.truncate(cfg_workspaces);

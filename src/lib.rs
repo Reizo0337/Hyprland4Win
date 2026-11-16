@@ -44,6 +44,7 @@ pub mod sysinfo;
 pub mod theme;
 pub mod cursor;
 pub mod toast;
+pub mod updater;
 pub mod widget_draw;
 pub mod widgets;
 pub mod wifi;

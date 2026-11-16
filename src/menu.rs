@@ -147,6 +147,8 @@ enum Target {
     Do(Sys),
     UpdateAll,
     Quit,
+    UpdateCheck,
+    UpdateInstall,
     Setting(usize),
     SetSetting(usize, String),
     AddWidget(WKind, WSize),
@@ -466,6 +468,19 @@ impl Handler for MenuHandler {
                 if packages::choco_available() {
                     add(glyph_row("Actualizar con Chocolatey", "choco upgrade all (administrador, en segundo plano)", '\u{E895}', 0xFF9F0A).hint("Admin"), Target::ChocoUpgrade, "choco actualizar");
                 }
+                if let Some(r) = crate::updater::available() {
+                    let mb = r.size as f32 / 1_048_576.0;
+                    add(
+                        glyph_row(&format!("Actualizar a v{}", r.version), &format!("Descarga {mb:.1} MB, verifica la suma SHA-256 y reinicia hypr-win"), '\u{E896}', 0x30D158).hint("Instalar").section("Actualizaciones"),
+                        Target::UpdateInstall,
+                        "actualizar update version nueva instalar",
+                    );
+                }
+                add(
+                    glyph_row("Buscar actualizaciones", &format!("Versión instalada: v{}", crate::updater::CURRENT), '\u{E895}', 0x0A84FF).section("Actualizaciones"),
+                    Target::UpdateCheck,
+                    "actualizar update version buscar",
+                );
                 add(glyph_row("Salir de hypr-win", "Restaura las ventanas y la barra de tareas", '\u{E711}', 0x8E8E93), Target::Quit, "cerrar");
             }
             Page::Themes => {
@@ -911,6 +926,8 @@ impl Handler for MenuHandler {
                 installer::start(Job { manager: Manager::Winget, kind: Kind::UpgradeAll, id: String::new(), name: "Aplicaciones".into() });
                 Outcome::Close
             }
+            Target::UpdateCheck => Outcome::Run(Box::new(|| crate::updater::check_async(true))),
+            Target::UpdateInstall => Outcome::Run(Box::new(crate::updater::install_async)),
             Target::Quit => {
                 crate::app::request_quit();
                 Outcome::Close

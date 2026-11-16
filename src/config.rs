@@ -277,6 +277,20 @@ impl Default for Wallpaper {
     }
 }
 
+/// Actualizaciones desde las releases de GitHub (ver `updater`).
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Updates {
+    /// Buscar actualizaciones al arrancar (como mucho una vez cada 24 h). Instalar siempre es a petición.
+    pub check: bool,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Self { check: true }
+    }
+}
+
 #[derive(Deserialize)]
 struct OnlyBinds {
     binds: Vec<String>,
@@ -296,6 +310,8 @@ pub struct Config {
     pub dock: Dock,
     #[serde(default)]
     pub wallpaper: Wallpaper,
+    #[serde(default)]
+    pub updates: Updates,
     #[serde(default = "default_binds")]
     pub binds: Vec<String>,
 }
