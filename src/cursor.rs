@@ -67,8 +67,8 @@ const PACKS: [(&str, &[Entry]); 5] = [
 ];
 
 /// Estilos de cursor válidos en un tema: los generados con los colores del tema y los packs incluidos.
-pub const STYLES: [&str; 9] =
-    ["classic", "contrast", "accent", "soft", "rosepine", "macos-regular", "macos-white", "capitaine-gruvbox", "capitaine-nord"];
+pub const STYLES: [&str; 10] =
+    ["classic", "contrast", "accent", "soft", "katana", "rosepine", "macos-regular", "macos-white", "capitaine-gruvbox", "capitaine-nord"];
 
 /// Valores originales de `KEYS` (tipo y datos, o `None` si no existían) antes de nuestro primer cambio.
 /// `Some` mientras tengamos cursores propios aplicados.
@@ -82,6 +82,7 @@ pub fn colors(style: &str, bg: u32, fg: u32, dim: u32, accent: u32, accent_text:
         "contrast" => Some((bg, fg)),
         "accent" => Some((accent, accent_text)),
         "soft" => Some((dim, bg)),
+        "katana" => Some((fg, bg)), // la hoja; el resto de colores los pone `katana_pixels`
         _ => None,
     }
 }
@@ -132,6 +133,45 @@ pub fn arrow_pixels(fill: u32, outline: u32) -> Vec<u32> {
             } else {
                 0
             };
+            out.push(px);
+        }
+    }
+    out
+}
+
+/// Katana en diagonal con la punta en (1, 1): hoja (`blade`), guarda (`guard`) y empuñadura (`grip`), con
+/// contorno de 1 px. Mismo formato de píxeles que [`arrow_pixels`].
+pub fn katana_pixels(blade: u32, guard: u32, grip: u32, outline: u32) -> Vec<u32> {
+    let argb = |c: u32, a: u32| -> u32 {
+        let (r, g, b) = (c & 0xff, (c >> 8) & 0xff, (c >> 16) & 0xff);
+        (a << 24) | (r << 16) | (g << 8) | b
+    };
+    // eje de la espada: desde la punta hacia abajo a la derecha
+    let (dx, dy) = (std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2);
+    let at = |s: f32, off: f32| (1.0 + dx * s - dy * off, 1.0 + dy * s + dx * off);
+    let part = |s0: f32, s1: f32, w0: f32, w1: f32| vec![at(s0, -w0), at(s1, -w1), at(s1, w1), at(s0, w0)];
+    let parts: [(Vec<(f32, f32)>, u32); 3] = [
+        // hoja: se ensancha en los primeros píxeles y sigue recta
+        (vec![at(0.0, 0.0), at(6.0, -2.0), at(26.0, -2.0), at(26.0, 2.0), at(6.0, 2.0)], blade),
+        (part(26.0, 28.5, 4.8, 4.8), guard),
+        (part(28.5, 41.0, 2.0, 2.0), grip),
+    ];
+    let mut out = Vec::with_capacity((SIZE * SIZE) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let p = (x as f32 + 0.5, y as f32 + 0.5);
+            let mut px = 0;
+            let mut near = f32::MAX;
+            for (poly, fill) in &parts {
+                let d = (0..poly.len()).map(|i| seg_dist(p, poly[i], poly[(i + 1) % poly.len()])).fold(f32::MAX, f32::min);
+                near = near.min(d);
+                if inside(p, poly) {
+                    px = if d < 0.9 { argb(outline, 255) } else { argb(*fill, 255) };
+                }
+            }
+            if px == 0 && near < 1.0 {
+                px = argb(outline, ((1.0 - near) * 255.0) as u32);
+            }
             out.push(px);
         }
     }
@@ -257,6 +297,11 @@ pub fn apply(bar: &Bar) -> Result<(), String> {
         return write_scheme(style, &files);
     }
     let c = |s: &str| parse_color(s);
+    if style == "katana" {
+        let (fg, bg, dim, accent) = (c(&bar.foreground)?, c(&bar.background)?, c(&bar.dim)?, c(&bar.accent)?);
+        let files = [("Arrow", "Normal.cur", cur_bytes(&katana_pixels(fg, dim, accent, bg)))];
+        return write_scheme(style, &files);
+    }
     let (fill, outline) = colors(
         style,
         c(&bar.background)?,
@@ -316,6 +361,18 @@ mod tests {
     }
 
     #[test]
+    fn katana_has_blade_guard_grip_and_a_clear_corner() {
+        let px = katana_pixels(0xffffff, 0x00ffff, 0x0000ff, 0);
+        assert_eq!(px.len(), (SIZE * SIZE) as usize);
+        let at = |x: i32, y: i32| px[(y * SIZE + x) as usize];
+        assert!(at(1, 1) >> 24 > 0, "la punta debe estar en (1, 1)");
+        assert_eq!(at(10, 10) & 0x00ff_ffff, 0x00ff_ffff, "hoja"); // COLORREF blanco
+        assert_eq!(at(28, 28) & 0x00ff_ffff, 0x00ff_0000, "empuñadura roja");
+        assert_eq!(at(31, 0) >> 24, 0);
+        assert_eq!(at(0, 31) >> 24, 0);
+    }
+
+    #[test]
     fn generated_cursor_file_has_valid_layout() {
         let bytes = cur_bytes(&arrow_pixels(0x0000ff, 0));
         assert_eq!(&bytes[0..4], &[0, 0, 2, 0]);
@@ -323,5 +380,25 @@ mod tests {
         // la imagen empieza en 22 y su cabecera mide 40 bytes
         assert_eq!(u32::from_le_bytes(bytes[14..18].try_into().unwrap()) as usize, bytes.len() - 22);
         assert_eq!(u32::from_le_bytes(bytes[22..26].try_into().unwrap()), 40);
+    }
+
+    /// A mano: `cargo test dump_katana -- --ignored` escribe `%TEMP%\katana.png` (ampliado 10x sobre un fondo gris).
+    #[test]
+    #[ignore]
+    fn dump_katana() {
+        let px = katana_pixels(0xd6e4ec, 0x4cb8d8, 0x2e10c8, 0x0d0b0e);
+        let k = 10;
+        let mut c = crate::gfx::Canvas::new(SIZE * k, SIZE * k).unwrap();
+        let mut out = Vec::new();
+        for y in 0..SIZE * k {
+            for x in 0..SIZE * k {
+                let p = px[((y / k) * SIZE + x / k) as usize];
+                let a = (p >> 24) as f32 / 255.0;
+                let ch = |v: u32| (((v & 0xff) as f32) * a + 90.0 * (1.0 - a)) as u32;
+                out.push(0xFF00_0000 | ch(p >> 16) << 16 | ch(p >> 8) << 8 | ch(p));
+            }
+        }
+        c.fill_from(&out);
+        assert!(c.save_png(&std::env::temp_dir().join("katana.png").to_string_lossy()));
     }
 }

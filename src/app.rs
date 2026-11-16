@@ -93,7 +93,35 @@ pub fn adopt_existing() {
 }
 
 pub fn shutdown() {
+    crate::livewall::stop();
     with(|a| a.restore_all());
+}
+
+/// Pone (o quita, con cadena vacía) el fondo animado y recuerda el valor en la configuración en memoria.
+/// Cadena: `gradient`, `glow`, `aurora` o la ruta de un `.gif`.
+pub fn set_animated(value: &str) -> Result<(), String> {
+    with(|a| {
+        let previous = std::mem::replace(&mut a.cfg.wallpaper.animated, value.trim().to_string());
+        let r = a.apply_animated();
+        if r.is_err() {
+            a.cfg.wallpaper.animated = previous;
+        }
+        r
+    })
+    .unwrap_or_else(|| Err("la aplicación aún no está lista".into()))
+}
+
+/// Arranca el fondo animado que diga la configuración (al iniciar).
+pub fn start_animated() {
+    if let Some(Err(e)) = with(|a| a.apply_animated()) {
+        eprintln!("aviso: no se pudo iniciar el fondo animado: {e}");
+    }
+}
+
+/// Fotogramas por segundo del fondo animado.
+pub fn set_animated_fps(fps: u32) {
+    with(|a| a.cfg.wallpaper.animated_fps = fps);
+    crate::livewall::set_fps(fps);
 }
 
 pub fn on_hotkey(index: i32) {
@@ -170,12 +198,14 @@ pub fn apply_theme(def: &crate::theme::ThemeDef) -> Result<(), String> {
     crate::toast::set_theme(&bar_cfg)?;
     crate::switcher::set_theme(&bar_cfg)?;
     crate::widgets::set_theme(&bar_cfg)?;
+    // el fondo animado procedural usa los colores del tema
+    crate::livewall::set_colors(crate::config::parse_color(&bar_cfg.background).unwrap_or(0), crate::config::parse_color(&bar_cfg.accent).unwrap_or(0xff840a));
     Ok(())
 }
 
-/// Cambia solo el diseño de la barra ("bar" o "bubbles"); los colores no se tocan.
+/// Cambia solo el diseño de la barra ("bar", "bubbles" o "ink"); los colores no se tocan.
 pub fn apply_bar_style(style: &str) -> Result<(), String> {
-    if !matches!(style, "bar" | "bubbles") {
+    if !matches!(style, "bar" | "bubbles" | "ink") {
         return Err(format!("estilo de barra desconocido: {style}"));
     }
     let bar_cfg = with(|a| {
@@ -282,6 +312,7 @@ impl App {
             self.mons = now;
             dock::set_monitors(&self.mon_ids());
             crate::widgets::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
+            crate::livewall::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
             if let Some(m) = self.mons.first() {
                 crate::toast::set_monitor(m.rect);
             }
@@ -347,6 +378,7 @@ impl App {
         self.mons = now;
         dock::set_monitors(&self.mon_ids());
         crate::widgets::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
+            crate::livewall::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
         if let Some(m) = self.mons.first() {
             crate::toast::set_monitor(m.rect);
         }
@@ -992,6 +1024,7 @@ impl App {
         crate::toast::set_theme(&bar_cfg)?;
         crate::switcher::set_theme(&bar_cfg)?;
         crate::widgets::set_theme(&bar_cfg)?;
+        crate::livewall::set_colors(crate::config::parse_color(&bar_cfg.background).unwrap_or(0), crate::config::parse_color(&bar_cfg.accent).unwrap_or(0xff840a));
         if old.bar.height != bar_cfg.height {
             let mons = window::monitors();
             bar::set_height(bar_cfg.height, &mons[..self.mons.len().min(mons.len())]);
@@ -1007,6 +1040,18 @@ impl App {
     }
 
     /// Arranca o detiene el temporizador del cambio automático de fondo.
+    fn apply_animated(&self) -> Result<(), String> {
+        let wp = &self.cfg.wallpaper;
+        let Some(source) = crate::livewall::Source::parse(&wp.animated) else {
+            crate::livewall::stop();
+            return Ok(());
+        };
+        let mons: Vec<_> = window::monitors().iter().map(|m| (m.id, m.rect)).collect();
+        let bg = crate::config::parse_color(&self.cfg.bar.background).unwrap_or(0);
+        let accent = crate::config::parse_color(&self.cfg.bar.accent).unwrap_or(0xff840a);
+        crate::livewall::start(source, wp.animated_fps, &mons, bg, accent)
+    }
+
     fn schedule_wallpaper(&mut self) {
         self.wallpaper_minutes = 0;
         unsafe {

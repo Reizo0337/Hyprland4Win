@@ -15,6 +15,7 @@ use windows::Win32::Graphics::GdiPlus::{
     GdipDeleteGraphics, GdipDeletePath, GdipDeletePen, GdipDeleteStringFormat, GdipDisposeImage, GdipNewPrivateFontCollection, GdipPrivateAddMemoryFont, GpFontCollection, GdipAddPathString, GdipGetPathWorldBounds, GdipCreateMatrix, GdipTranslateMatrix, GdipTransformPath, GdipDeleteMatrix, MatrixOrderPrepend, GdipDrawEllipse,
     GdipDrawLine, GdipDrawPath, GdipDrawString, GdipFillEllipse, GdipFillPath, GdipGetImageGraphicsContext,
     GdipMeasureString, GdipSetPenEndCap, GdipSetPenStartCap, GdipSetInterpolationMode, GdipSetPixelOffsetMode, GdipSetSmoothingMode, GdipDrawArc, GdipDrawImageRect, GdipSaveImageToFile, GdipFillPolygon, InterpolationModeHighQualityBicubic, PointF,
+    GdipCreateBitmapFromFile, GdipImageGetFrameDimensionsList, GdipImageGetFrameCount, GdipImageSelectActiveFrame, GdipGetPropertyItemSize, GdipGetPropertyItem, GdipGetImageWidth, GdipGetImageHeight, InterpolationModeHighQualityBilinear, InterpolationModeNearestNeighbor,
     GdipSetStringFormatAlign, GdipSetStringFormatFlags, GdipSetStringFormatLineAlign,
     GdipSetStringFormatTrimming, GdipSetTextRenderingHint, GdiplusStartup, GdiplusStartupInput, GpBitmap, GpBrush,
     GpFont, GpFontFamily, GpGraphics, GpImage, GpPath, GpStringFormat, LineCapRound, PixelOffsetModeHalf, RectF,
@@ -453,6 +454,28 @@ impl Canvas {
         }
     }
 
+    /// Dibuja otro lienzo (normalmente más pequeño) ocupando todo este: con interpolación bilineal (`smooth`)
+    /// o sin suavizar (píxeles cuadrados, para pixel art).
+    pub fn draw_scaled(&mut self, src: &Canvas, smooth: bool) {
+        unsafe {
+            GdipSetInterpolationMode(self.g, if smooth { InterpolationModeHighQualityBilinear } else { InterpolationModeNearestNeighbor });
+            GdipDrawImageRect(self.g, src.bitmap as *mut GpImage, 0.0, 0.0, self.w as f32, self.h as f32);
+            GdipSetInterpolationMode(self.g, InterpolationModeHighQualityBicubic);
+        }
+    }
+
+    /// Dibuja el fotograma activo de una imagen animada cubriendo todo el lienzo (recorta lo que sobre).
+    pub fn draw_cover(&mut self, img: &AnimatedImage) {
+        let (iw, ih) = (img.w.max(1) as f32, img.h.max(1) as f32);
+        let scale = (self.w as f32 / iw).max(self.h as f32 / ih);
+        let (dw, dh) = (iw * scale, ih * scale);
+        unsafe {
+            GdipSetInterpolationMode(self.g, InterpolationModeHighQualityBilinear);
+            GdipDrawImageRect(self.g, img.image, (self.w as f32 - dw) / 2.0, (self.h as f32 - dh) / 2.0, dw, dh);
+            GdipSetInterpolationMode(self.g, InterpolationModeHighQualityBicubic);
+        }
+    }
+
     /// Ancho en px del texto.
     pub fn measure(&mut self, font: &Font, s: &str) -> f32 {
         if s.is_empty() {
@@ -510,6 +533,75 @@ impl Drop for Canvas {
             SelectObject(self.hdc, self.old);
             let _ = DeleteObject(self.bmp.into());
             let _ = DeleteDC(self.hdc);
+        }
+    }
+}
+
+/// Imagen con varios fotogramas (GIF animado) cargada con GDI+.
+pub struct AnimatedImage {
+    image: *mut GpImage,
+    pub w: u32,
+    pub h: u32,
+    /// Duración de cada fotograma en milisegundos (mínimo 20).
+    pub delays_ms: Vec<u32>,
+    dimension: windows::core::GUID,
+}
+
+impl AnimatedImage {
+    pub fn open(path: &str) -> Option<AnimatedImage> {
+        start();
+        let wide = HSTRING::from(path);
+        unsafe {
+            let mut bmp: *mut GpBitmap = null_mut();
+            if GdipCreateBitmapFromFile(PCWSTR(wide.as_ptr()), &mut bmp) != Status(0) || bmp.is_null() {
+                return None;
+            }
+            let image = bmp as *mut GpImage;
+            let (mut w, mut h) = (0u32, 0u32);
+            GdipGetImageWidth(image, &mut w);
+            GdipGetImageHeight(image, &mut h);
+            // dimensión "tiempo" de los fotogramas
+            let mut dim = windows::core::GUID::zeroed();
+            let mut frames = 1u32;
+            if GdipImageGetFrameDimensionsList(image, &mut dim, 1) == Status(0) {
+                GdipImageGetFrameCount(image, &dim, &mut frames);
+            }
+            // retardos: PropertyTagFrameDelay (0x5100), un u32 por fotograma en centésimas de segundo
+            let mut delays = vec![100u32; frames.max(1) as usize];
+            let mut size = 0u32;
+            if GdipGetPropertyItemSize(image, 0x5100, &mut size) == Status(0) && size >= 8 {
+                let mut buf = vec![0u8; size as usize];
+                let item = buf.as_mut_ptr() as *mut windows::Win32::Graphics::GdiPlus::PropertyItem;
+                if GdipGetPropertyItem(image, 0x5100, size, item) == Status(0) {
+                    let (len, value) = ((*item).length as usize / 4, (*item).value as *const u32);
+                    for (i, d) in delays.iter_mut().enumerate().take(len) {
+                        *d = value.add(i).read_unaligned().saturating_mul(10);
+                    }
+                }
+            }
+            for d in delays.iter_mut() {
+                *d = (*d).max(20);
+            }
+            Some(AnimatedImage { image, w, h, delays_ms: delays, dimension: dim })
+        }
+    }
+
+    pub fn frames(&self) -> usize {
+        self.delays_ms.len()
+    }
+
+    /// Hace activo el fotograma `i` (el siguiente `draw_cover` lo dibuja).
+    pub fn select(&self, i: usize) {
+        unsafe {
+            GdipImageSelectActiveFrame(self.image, &self.dimension, i as u32);
+        }
+    }
+}
+
+impl Drop for AnimatedImage {
+    fn drop(&mut self) {
+        unsafe {
+            GdipDisposeImage(self.image);
         }
     }
 }

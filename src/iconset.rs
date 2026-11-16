@@ -4,10 +4,12 @@
 //! (`tools/build_icon_packs.py`), así que ocupa unos pocos KB.
 //!
 //! Licencias: Phosphor, Tabler y Fluent UI System Icons (MIT) y Lucide (ISC); los textos están en `assets/icons`.
+//! El pack «Bushidō» está dibujado para este proyecto (`tools/build_bushido_icons.py`).
 
 use std::ops::Deref;
 
 use crate::gfx::Font;
+use crate::iconset_bushido as b;
 use crate::iconset_data as d;
 
 pub struct Pack {
@@ -22,13 +24,14 @@ pub struct Pack {
     status: &'static [(&'static str, char)],
 }
 
-pub static PACKS: [Pack; 7] = [
+pub static PACKS: [Pack; 8] = [
     Pack { key: "phosphor", label: "Phosphor", style: "Trazo regular", family: d::PHOSPHOR_FAMILY, font: include_bytes!("../assets/icons/phosphor.ttf"), map: d::PHOSPHOR_MAP, status: d::PHOSPHOR_STATUS },
     Pack { key: "phosphor-bold", label: "Phosphor Bold", style: "Trazo grueso", family: d::PHOSPHOR_BOLD_FAMILY, font: include_bytes!("../assets/icons/phosphor-bold.ttf"), map: d::PHOSPHOR_BOLD_MAP, status: d::PHOSPHOR_BOLD_STATUS },
     Pack { key: "phosphor-fill", label: "Phosphor Fill", style: "Rellenos", family: d::PHOSPHOR_FILL_FAMILY, font: include_bytes!("../assets/icons/phosphor-fill.ttf"), map: d::PHOSPHOR_FILL_MAP, status: d::PHOSPHOR_FILL_STATUS },
     Pack { key: "lucide", label: "Lucide", style: "Trazo fino", family: d::LUCIDE_FAMILY, font: include_bytes!("../assets/icons/lucide.ttf"), map: d::LUCIDE_MAP, status: d::LUCIDE_STATUS },
     Pack { key: "fluent", label: "Fluent", style: "Estilo Windows 11", family: d::FLUENT_FAMILY, font: include_bytes!("../assets/icons/fluent.ttf"), map: d::FLUENT_MAP, status: d::FLUENT_STATUS },
     Pack { key: "fluent-fill", label: "Fluent Fill", style: "Windows 11, rellenos", family: d::FLUENT_FILL_FAMILY, font: include_bytes!("../assets/icons/fluent-fill.ttf"), map: d::FLUENT_FILL_MAP, status: d::FLUENT_FILL_STATUS },
+    Pack { key: "bushido", label: "Bushidō", style: "Trazos angulares de pincel", family: b::BUSHIDO_FAMILY, font: include_bytes!("../assets/icons/bushido.ttf"), map: b::BUSHIDO_MAP, status: b::BUSHIDO_STATUS },
     Pack { key: "tabler", label: "Tabler", style: "Trazo redondeado", family: d::TABLER_FAMILY, font: include_bytes!("../assets/icons/tabler.ttf"), map: d::TABLER_MAP, status: d::TABLER_STATUS },
 ];
 

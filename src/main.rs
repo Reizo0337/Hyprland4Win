@@ -91,6 +91,7 @@ fn run() -> Result<(), String> {
             SetTimer(Some(main_hwnd), bar::TIMER_WIDGETS, 1000, None);
         }
     }
+    app::start_animated();
     if dock_cfg.enabled {
         let mut mons: Vec<_> = window::monitors().iter().map(|m| (m.id, m.rect)).collect();
         mons.truncate(cfg_workspaces);

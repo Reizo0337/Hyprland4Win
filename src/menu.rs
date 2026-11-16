@@ -56,6 +56,7 @@ enum Page {
     Wallpaper,
     WpFit,
     WpInterval,
+    WpFps,
     WpFolder,
     Settings,
     SettingValue(usize),
@@ -166,6 +167,9 @@ enum Target {
     WpNextMonitor,
     WpSetFit(Fit),
     WpSetInterval(u32),
+    WpAnimate(String),
+    WpAnimateStop,
+    WpSetFps(u32),
     WpSetFolder(String),
     WpToggleFollow,
     WpToggleLock,
@@ -259,6 +263,7 @@ impl Handler for MenuHandler {
             Page::Wallpaper => "Buscar una imagen o una opción",
             Page::WpFit => "Cómo se ajusta la imagen",
             Page::WpInterval => "Cada cuánto cambia el fondo",
+            Page::WpFps => "Fotogramas por segundo del fondo animado",
             Page::WpFolder => "Ruta de la carpeta (p. ej. D:\\Fondos)",
             Page::Settings => "Buscar un ajuste",
             Page::Widgets => "Buscar un widget",
@@ -290,7 +295,7 @@ impl Handler for MenuHandler {
             Page::Themes | Page::ThemeDelete => "Temas",
             Page::ThemeEdit | Page::ThemeName => "Editar tema",
             Page::ThemeValue(p) => p.label(),
-            Page::Wallpaper | Page::WpFit | Page::WpInterval | Page::WpFolder => "Fondo",
+            Page::Wallpaper | Page::WpFit | Page::WpInterval | Page::WpFps | Page::WpFolder => "Fondo",
             Page::Settings => "Ajustes",
             Page::SettingValue(i) => settings::ALL[*i].label,
             Page::Widgets => "Widgets",
@@ -467,7 +472,7 @@ impl Handler for MenuHandler {
                 let active = app_bar().theme;
                 // diseño de la barra: independiente de los colores (no cambia con el tema)
                 let style = app_bar().style;
-                for (name, key, subtitle) in [("Minimal 1", "bar", "Barra continua"), ("Minimal 2", "bubbles", "Burbujas separadas")] {
+                for (name, key, subtitle) in [("Minimal 1", "bar", "Barra continua"), ("Minimal 2", "bubbles", "Burbujas separadas"), ("Tinta", "ink", "Numerales kanji y sello rojo")] {
                     let hint = if style == key { "Activo" } else { "Aplicar" };
                     add(Row::new(name).subtitle(subtitle).hint(hint).section("Diseño de la barra"), Target::SetBarStyle(key.into()), "diseño barra estilo burbuja");
                 }
@@ -592,6 +597,35 @@ impl Handler for MenuHandler {
                         Target::WpGenerate(kind),
                         "generar degradado tema",
                     );
+                }
+                let playing = crate::livewall::current();
+                for kind in WpKind::ALL.into_iter().filter(|k| wallpaper::is_animatable(*k)) {
+                    let src = crate::livewall::Source::Procedural(kind);
+                    let on = playing.as_ref() == Some(&src);
+                    add(
+                        Row::new(src.label()).subtitle(format!("Se mueve con los colores de «{name}»")).hint(if on { "En marcha" } else { "Animar" }).icon(RowIcon::Swatch(bg, ac, fg)).section("Fondo animado"),
+                        Target::WpAnimate(src.key()),
+                        "animado movimiento vivo live",
+                    );
+                }
+                for gif in wallpaper::animated_files(&cfg.dir, 100) {
+                    let key = gif.path.to_string_lossy().into_owned();
+                    let on = playing.as_ref().is_some_and(|s| s.key() == key);
+                    add(Row::new(gif.name.clone()).subtitle(gif.source).hint(if on { "En marcha" } else { "Animar" }).icon(RowIcon::File(key.clone())).section("Fondo animado"), Target::WpAnimate(key), "gif animado movimiento");
+                }
+                {
+                    let on = playing == Some(crate::livewall::Source::Samurai);
+                    add(
+                        Row::new("Samurái · noche").subtitle("Luna, torii, niebla y un samurái; pixel art").hint(if on { "En marcha" } else { "Animar" }).icon(RowIcon::Swatch(bg, ac, fg)).section("Fondo animado"),
+                        Target::WpAnimate("samurai".into()),
+                        "samurai katana japones torii luna animado",
+                    );
+                }
+                if let Some(src) = &playing {
+                    add(glyph_row("Detener el fondo animado", &format!("Ahora: {}", src.label()), '\u{E74D}', 0xFF453A).section("Fondo animado"), Target::WpAnimateStop, "parar quitar apagar animado");
+                    add(glyph_row("Fotogramas por segundo", &format!("{} fps (los GIF usan los suyos)", cfg.animated_fps), '\u{E916}', 0x8E8E93).hint("›").section("Fondo animado"), Target::Go(Page::WpFps), "fps velocidad rendimiento");
+                } else {
+                    add(glyph_row("Para usar un GIF", "Ponlo en tu carpeta de imágenes; los .gif aparecen aquí", '\u{E946}', 0x8E8E93).section("Fondo animado"), Target::Noop, "");
                 }
                 for img in wallpaper::images(&cfg.dir, 300) {
                     let path = img.path.to_string_lossy().into_owned();
@@ -724,6 +758,12 @@ impl Handler for MenuHandler {
                 for n in [0u32, 5, 10, 15, 30, 60, 120, 240] {
                     let title = if n == 0 { "Desactivado".to_string() } else if n < 60 { format!("Cada {n} minutos") } else { format!("Cada {} h", n / 60) };
                     add(glyph_row(&title, "", '\u{E916}', 0x8E8E93).hint(if n == current { "Actual" } else { "Aplicar" }), Target::WpSetInterval(n), "");
+                }
+            }
+            Page::WpFps => {
+                let current = crate::app::wallpaper_cfg().animated_fps;
+                for n in [10u32, 15, 24, 30, 45, 60] {
+                    add(glyph_row(&format!("{n} fps"), if n <= 15 { "Menos consumo" } else if n >= 45 { "Más fluido, más consumo" } else { "" }, '\u{E916}', 0x8E8E93).hint(if n == current { "Actual" } else { "Aplicar" }), Target::WpSetFps(n), "");
                 }
             }
             Page::WpFolder => {
@@ -890,6 +930,14 @@ impl Handler for MenuHandler {
                         let _ = crate::app::apply_theme(&def);
                         let _ = crate::config::save_value("bar", "theme", &lit_str(&def.name));
                         follow_theme_wallpaper(&def);
+                        // un tema puede traer su propio fondo animado (p. ej. «Bushidō»); los demás no tocan el actual
+                        if let Some(a) = def.animated.as_deref().filter(|a| !a.trim().is_empty()) {
+                            let r = crate::app::set_animated(a).map(|_| {
+                                let _ = crate::config::save_value("wallpaper", "animated", &lit_str(a));
+                                format!("Fondo animado: {}", crate::livewall::Source::parse(a).map(|s| s.label()).unwrap_or_default())
+                            });
+                            notify(r);
+                        }
                     }
                 }))
             }
@@ -1006,6 +1054,28 @@ impl Handler for MenuHandler {
                     let _ = crate::config::save_value("wallpaper", "fit", &lit_str(f.key()));
                     crate::app::set_wallpaper_cfg(w);
                     notify(wallpaper::set_fit(f).map(|_| format!("Ajuste: {}", f.label())));
+                }))
+            }
+            Target::WpAnimate(key) => Outcome::Run(Box::new(move || {
+                let label = crate::livewall::Source::parse(&key).map(|s| s.label()).unwrap_or_default();
+                let r = crate::app::set_animated(&key).map(|_| {
+                    let _ = crate::config::save_value("wallpaper", "animated", &lit_str(&key));
+                    format!("Fondo animado: {label}")
+                });
+                notify(r);
+            })),
+            Target::WpAnimateStop => Outcome::Run(Box::new(|| {
+                let r = crate::app::set_animated("").map(|_| {
+                    let _ = crate::config::save_value("wallpaper", "animated", &lit_str(""));
+                    "Fondo animado detenido".to_string()
+                });
+                notify(r);
+            })),
+            Target::WpSetFps(n) => {
+                self.page = self.stack.pop().unwrap_or(Page::Wallpaper);
+                Outcome::Run(Box::new(move || {
+                    let _ = crate::config::save_value("wallpaper", "animated_fps", &n.to_string());
+                    crate::app::set_animated_fps(n);
                 }))
             }
             Target::WpSetInterval(n) => {

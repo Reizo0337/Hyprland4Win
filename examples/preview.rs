@@ -136,6 +136,7 @@ fn main() {
         right: &clock,
         status: &status,
         bubbles,
+        ink: cfg.bar.style == "ink" && !bubbles,
         music,
     };
     bar::render(&mut canvas, &theme, &font, cfg.bar.opacity, &mk(cfg.bar.style == "bubbles", None));

@@ -233,6 +233,7 @@ impl State {
                 let _ = KillTimer(Some(self.hwnd), TIMER_EXPIRE);
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
             }
+            self.canvas = None;
             return;
         }
         let (w, h) = canvas_size(self.toasts.len());

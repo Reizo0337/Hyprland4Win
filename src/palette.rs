@@ -551,7 +551,11 @@ pub fn close(refocus: bool) {
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
     keybinds::set_capture(false);
-    let _ = with(|p| p.handler = None);
+    let _ = with(|p| {
+        p.handler = None;
+        p.canvas = None; // el lienzo (varios MB) se vuelve a crear al abrir
+    });
+    crate::mem::trim();
     if refocus && prev != 0 && window::is_alive(prev) {
         window::focus(prev);
     }

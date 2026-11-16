@@ -325,6 +325,8 @@ impl State {
                 let _ = SetWindowPos(w.hwnd, Some(z), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
         }
+        // el fondo animado, si lo hay, va por debajo de los widgets
+        crate::livewall::restack();
     }
 
     fn refresh_shortcuts(&mut self) {

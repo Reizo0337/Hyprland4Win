@@ -264,7 +264,9 @@ pub fn end() {
             let _ = KillTimer(Some(s.hwnd), TIMER_SHOW);
             let _ = ShowWindow(s.hwnd, SW_HIDE);
         }
+        s.canvas = None;
     });
+    crate::mem::trim();
 }
 
 impl State {

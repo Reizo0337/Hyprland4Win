@@ -278,6 +278,38 @@ pub struct Image {
 
 const EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "bmp"];
 
+/// Fondos animados que se pueden usar como archivo (GIF animados).
+pub fn is_animated_file(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gif"))
+}
+
+/// GIF animados de la carpeta del usuario (y una subcarpeta de profundidad).
+pub fn animated_files(configured_dir: &str, limit: usize) -> Vec<Image> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<Image>, limit: usize) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            if out.len() >= limit {
+                return;
+            }
+            if p.is_dir() {
+                if depth > 0 {
+                    walk(&p, depth - 1, out, limit);
+                }
+            } else if is_animated_file(&p) {
+                let name = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                out.push(Image { path: p, name, source: "GIF animado" });
+            }
+        }
+    }
+    let mut v = Vec::new();
+    if let Some(d) = user_dir(configured_dir) {
+        walk(&d, 1, &mut v, limit);
+    }
+    v
+}
+
 pub fn is_image(p: &Path) -> bool {
     p.extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
@@ -389,7 +421,7 @@ impl Kind {
 
 type Rgb = [f32; 3];
 
-fn unpack(colorref: u32) -> Rgb {
+pub(crate) fn unpack(colorref: u32) -> Rgb {
     [(colorref & 0xff) as f32 / 255.0, ((colorref >> 8) & 0xff) as f32 / 255.0, ((colorref >> 16) & 0xff) as f32 / 255.0]
 }
 
@@ -437,6 +469,12 @@ fn dither(x: usize, y: usize) -> f32 {
 
 /// Píxeles ARGB opacos (`w` x `h`) de un fondo generado con los colores del tema (COLORREF).
 pub fn render(kind: Kind, w: usize, h: usize, bg: u32, accent: u32) -> Vec<u32> {
+    render_at(kind, w, h, bg, accent, 0.0)
+}
+
+/// Como [`render`] pero en el instante `t` (segundos) de la animación: las manchas de luz se desplazan
+/// con movimientos lentos y periódicos. Con `t = 0` coincide exactamente con el fondo estático.
+pub fn render_at(kind: Kind, w: usize, h: usize, bg: u32, accent: u32, t: f32) -> Vec<u32> {
     let (bg, accent) = (unpack(bg), unpack(accent));
     let (fw, fh) = (w as f32, h as f32);
     let blob = |x: f32, y: f32, cx: f32, cy: f32, r: f32| {
@@ -451,14 +489,20 @@ pub fn render(kind: Kind, w: usize, h: usize, bg: u32, accent: u32) -> Vec<u32> 
             let c = match kind {
                 Kind::Solid => bg,
                 Kind::Gradient => {
-                    let t = ((px / fw + py / fh) / 2.0).clamp(0.0, 1.0);
-                    let t = t * t * (3.0 - 2.0 * t); // suavizado
-                    mix(bg, mix(bg, accent, 0.5), t)
+                    let u = ((px / fw + py / fh) / 2.0 + 0.25 * (t * 0.35).sin()).clamp(0.0, 1.0);
+                    let u = u * u * (3.0 - 2.0 * u); // suavizado
+                    mix(bg, mix(bg, accent, 0.5), u)
                 }
-                Kind::Glow => mix(bg, accent, blob(px, py, 0.25, 0.2, 0.95) * 0.6),
+                Kind::Glow => {
+                    let (cx, cy) = (0.25 + 0.2 * (t * 0.3).sin(), 0.2 + 0.15 * (t * 0.23).sin());
+                    mix(bg, accent, blob(px, py, cx, cy, 0.95) * 0.6)
+                }
                 Kind::Aurora => {
                     let mut c = bg;
-                    for (tint, (cx, cy, r)) in tints.iter().zip([(0.2, 0.25, 0.6), (0.8, 0.3, 0.55), (0.55, 0.9, 0.65)]) {
+                    for (i, (tint, (cx, cy, r))) in tints.iter().zip([(0.2, 0.25, 0.6), (0.8, 0.3, 0.55), (0.55, 0.9, 0.65)]).enumerate() {
+                        let (sx, sy) = (i as f32 * 2.1, i as f32 * 1.3);
+                        // desplazamiento nulo en t = 0: el primer fotograma es el fondo estático
+                        let (cx, cy) = (cx + 0.14 * ((t * 0.31 + sx).sin() - sx.sin()), cy + 0.12 * ((t * 0.27 + sy).cos() - sy.cos()));
                         let k = blob(px, py, cx, cy, r) * 0.55;
                         c = [c[0] + (tint[0] - bg[0]) * k, c[1] + (tint[1] - bg[1]) * k, c[2] + (tint[2] - bg[2]) * k];
                     }
@@ -469,6 +513,11 @@ pub fn render(kind: Kind, w: usize, h: usize, bg: u32, accent: u32) -> Vec<u32> 
         }
     }
     out
+}
+
+/// ¿Es un fondo con movimiento? (el color liso no se mueve).
+pub fn is_animatable(kind: Kind) -> bool {
+    kind != Kind::Solid
 }
 
 /// Genera el fondo y lo guarda como PNG en la carpeta de generados. Devuelve la ruta.

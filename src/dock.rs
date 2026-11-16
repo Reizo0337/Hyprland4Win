@@ -194,7 +194,13 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
 
 /// Un icono de aplicación según el estilo del tema: en `tile` va sobre una ficha redondeada.
 fn draw_app_icon(c: &mut Canvas, th: &Theme, icon: &Icon, rect: FRect) {
-    if th.app_icons.eq_ignore_ascii_case("tile") {
+    if th.app_icons.eq_ignore_ascii_case("ink") {
+        // ficha de tinta: casi negra, con un filo carmesí
+        let radius = rect.w * 0.16;
+        c.fill_round(rect, radius, argb(mix(th.bg, 0x000000, 0.5), 255));
+        c.stroke_round(rect.grow(-0.5), radius, 1.2, argb(th.accent, 150));
+        c.draw_icon(icon, rect.grow(-rect.w * 0.2));
+    } else if th.app_icons.eq_ignore_ascii_case("tile") {
         let radius = rect.w * 0.24;
         c.fill_round(rect, radius, argb(mix(th.bg, th.fg, 0.12), 255));
         c.stroke_round(rect.grow(-0.5), radius, 1.0, argb(th.fg, 55));
@@ -215,6 +221,10 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, m: &Metrics, items: &[ItemV
     let pill_h = m.pill_h();
     let pill = FRect::new(center - total / 2.0 - m.pad_x, c.h as f32 - m.margin - pill_h, total + 2.0 * m.pad_x, pill_h);
     c.card(pill, px(18.0), th.bg, 0xB4, th.fg);
+    let ink = th.app_icons.eq_ignore_ascii_case("ink");
+    if ink {
+        c.stroke_round(pill.grow(-0.5), px(18.0), 1.0, argb(th.accent, 110));
+    }
 
     let baseline = pill.y + pill_h - m.pad_y;
     let hovered = cursor.filter(|_| amount > 0.3).and_then(|x| slot_at(&slots, x - center));
@@ -238,7 +248,13 @@ pub fn render(c: &mut Canvas, th: &Theme, f: &Fonts, m: &Metrics, items: &[ItemV
         }
         if item.running {
             let d = px(4.5);
-            c.fill_ellipse(FRect::new(sx + slot.width / 2.0 - d / 2.0, pill.y + pill_h - px(6.0) - d / 2.0, d, d), argb(th.fg, 200));
+            if ink {
+                // marcador carmesí alargado, como un trazo de pincel
+                let (bw, bh) = (px(16.0), px(2.6));
+                c.fill_round(FRect::new(sx + slot.width / 2.0 - bw / 2.0, pill.y + pill_h - px(6.0) - bh / 2.0, bw, bh), bh / 2.0, argb(th.accent, 255));
+            } else {
+                c.fill_ellipse(FRect::new(sx + slot.width / 2.0 - d / 2.0, pill.y + pill_h - px(6.0) - d / 2.0, d, d), argb(th.fg, 200));
+            }
         }
         zones.push((sx, slot.width, i));
         if hovered == Some(i) {
@@ -629,7 +645,7 @@ impl Dock {
     /// Recolorea los iconos si el estilo del tema lo pide (`mono`, `accent`).
     fn restyle(&mut self) {
         let tint = match self.theme.app_icons.to_lowercase().as_str() {
-            "mono" => Some(self.theme.fg),
+            "mono" | "ink" => Some(self.theme.fg),
             "accent" => Some(self.theme.accent),
             _ => None,
         };

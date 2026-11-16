@@ -38,6 +38,7 @@ pub const TIMER_TASKBAR: usize = 6;
 const TIMER_STATUS: usize = 7;
 pub const TIMER_WALLPAPER: usize = 8;
 pub const TIMER_WIDGETS: usize = 9;
+pub const TIMER_LIVEWALL: usize = 11;
 /// Animación de la música (solo corre mientras suena algo).
 const TIMER_MUSIC: usize = 10;
 
@@ -59,6 +60,8 @@ pub struct BarView<'a> {
     pub status: &'a Status,
     /// Estilo "bubbles": cada grupo en su propia burbuja y sin título de ventana.
     pub bubbles: bool,
+    /// Estilo "ink": numerales kanji, sello rojo en el workspace activo y filo carmesí.
+    pub ink: bool,
     /// Lo que suena ahora (si suena algo): se muestra en el centro.
     pub music: Option<MusicView<'a>>,
 }
@@ -113,6 +116,15 @@ const BUBBLE_EDGE: f32 = 6.0;
 const BUBBLE_SLOT: f32 = 18.0;
 const BUBBLE_ITEM_GAP: f32 = 16.0;
 
+/// Numeral kanji del workspace `n` (1 = 一 … 10 = 十); a partir de 11 se usan cifras.
+pub fn kanji(n: usize) -> String {
+    const K: [&str; 10] = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+    match n {
+        1..=10 => K[n - 1].to_string(),
+        _ => n.to_string(),
+    }
+}
+
 /// Posición inicial y separación (px) de los puntos de workspaces.
 fn workspace_metrics(bubbles: bool) -> (f32, f32) {
     if bubbles {
@@ -157,7 +169,16 @@ pub fn render(c: &mut Canvas, th: &Theme, font: &Font, opacity: u8, v: &BarView)
     let bubble = |c: &mut Canvas, x: f32, width: f32| c.fill_round(FRect::new(x, margin, width, bubble_h), bubble_h / 2.0, fill);
     if !v.bubbles {
         c.fill_round(FRect::new(0.0, 0.0, w, h), 0.0, fill);
-        c.fill_round(FRect::new(0.0, h - 1.0, w, 1.0), 0.0, argb(th.fg, 28));
+        if v.ink {
+            // filo carmesí que se desvanece hacia la derecha, como una pincelada
+            let steps = 24;
+            for i in 0..steps {
+                let a = (200.0 * (1.0 - i as f32 / steps as f32).powf(1.4)) as u8;
+                c.fill_round(FRect::new(w * i as f32 / steps as f32, h - 2.0, w / steps as f32 + 1.0, 2.0), 0.0, argb(th.accent, a));
+            }
+        } else {
+            c.fill_round(FRect::new(0.0, h - 1.0, w, 1.0), 0.0, argb(th.fg, 28));
+        }
     }
 
     // puntos de workspaces + pastilla activa deslizante
@@ -167,15 +188,29 @@ pub fn render(c: &mut Canvas, th: &Theme, font: &Font, opacity: u8, v: &BarView)
     if v.bubbles {
         bubble(c, x0 - inset, v.occupied.len() as f32 * slot + 2.0 * inset);
     }
-    for (i, &occ) in v.occupied.iter().enumerate() {
-        let cx = x0 + i as f32 * slot + slot / 2.0;
-        let a = if occ { 170 } else { 70 };
-        c.fill_ellipse(FRect::new(cx - dot / 2.0, cy - dot / 2.0, dot, dot), argb(th.fg, a));
+    if v.ink {
+        // sello (hanko) que se desliza al workspace activo y numerales kanji
+        let seal = px(17.0);
+        let cx = x0 + v.hl * slot + slot / 2.0;
+        let color = if v.focused { argb(th.accent, 255) } else { argb(th.fg, 150) };
+        c.fill_round(FRect::new(cx - seal / 2.0, cy - seal / 2.0, seal, seal), px(3.0), color);
+        for (i, &occ) in v.occupied.iter().enumerate() {
+            let cell = FRect::new(x0 + i as f32 * slot, cy - seal / 2.0 - px(1.0), slot, seal + px(2.0));
+            let under_seal = (i as f32 - v.hl).abs() < 0.5;
+            let ink_col = if under_seal { argb(th.accent_text, 255) } else { argb(th.fg, if occ { 230 } else { 90 }) };
+            c.text(font, &kanji(i + 1), cell, ink_col, Align::Center);
+        }
+    } else {
+        for (i, &occ) in v.occupied.iter().enumerate() {
+            let cx = x0 + i as f32 * slot + slot / 2.0;
+            let a = if occ { 170 } else { 70 };
+            c.fill_ellipse(FRect::new(cx - dot / 2.0, cy - dot / 2.0, dot, dot), argb(th.fg, a));
+        }
+        let cx = x0 + v.hl * slot + slot / 2.0;
+        let pill_w = px(16.0);
+        let color = if v.focused { argb(th.accent, 255) } else { argb(th.fg, 200) };
+        c.fill_round(FRect::new(cx - pill_w / 2.0, cy - dot / 2.0, pill_w, dot), dot / 2.0, color);
     }
-    let cx = x0 + v.hl * slot + slot / 2.0;
-    let pill_w = px(16.0);
-    let color = if v.focused { argb(th.accent, 255) } else { argb(th.fg, 200) };
-    c.fill_round(FRect::new(cx - pill_w / 2.0, cy - dot / 2.0, pill_w, dot), dot / 2.0, color);
 
     // fecha y hora a la derecha
     let right_w = c.measure(font, v.right);
@@ -285,6 +320,7 @@ struct State {
     focused_mon: usize,
     status: Status,
     bubbles: bool,
+    ink: bool,
     /// Título de lo que suena ahora (`None` si no suena nada) y desde cuándo.
     music: Option<String>,
     music_since: std::time::Instant,
@@ -324,6 +360,7 @@ pub fn create_all(cfg: &Bar, workspaces: usize, mons: &[MonitorInfo]) -> Result<
             focused_mon: 0,
             status: status::poll(),
             bubbles: cfg.style == "bubbles",
+            ink: cfg.style == "ink",
             music: None,
             music_since: std::time::Instant::now(),
             bars: Vec::new(),
@@ -462,6 +499,7 @@ pub fn set_theme(cfg: &Bar) -> Result<(), String> {
             st.font = font;
             st.opacity = cfg.opacity;
             st.bubbles = cfg.style == "bubbles";
+            st.ink = cfg.style == "ink";
         }
     });
     redraw_all();
@@ -520,7 +558,7 @@ fn redraw_all() {
     STATE.with(|s| {
         let mut g = s.borrow_mut();
         let Some(st) = g.as_mut() else { return };
-        let State { theme, font, opacity, height, occupied, focused_mon, status, bubbles, music, music_since, bars } = st;
+        let State { theme, font, opacity, height, occupied, focused_mon, status, bubbles, ink, music, music_since, bars } = st;
         let music_t = music_since.elapsed().as_secs_f32();
         for (i, b) in bars.iter_mut().enumerate() {
             let (w, h) = (b.mon.w, *height);
@@ -528,7 +566,7 @@ fn redraw_all() {
                 b.canvas = Canvas::new(w, h);
             }
             let Some(canvas) = b.canvas.as_mut() else { continue };
-            let view = BarView { occupied, hl: b.hl, focused: i == *focused_mon, title: &b.title, right: &clock, status, bubbles: *bubbles, music: music.as_deref().map(|title| MusicView { title, t: music_t }) };
+            let view = BarView { occupied, hl: b.hl, focused: i == *focused_mon, title: &b.title, right: &clock, status, bubbles: *bubbles, ink: *ink, music: music.as_deref().map(|title| MusicView { title, t: music_t }) };
             b.cluster = render(canvas, theme, font, *opacity, &view);
             canvas.present(b.hwnd, None);
         }
@@ -654,6 +692,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             match wp.0 {
                 TIMER_BAR => step_highlight(),
                 TIMER_WALLPAPER => crate::app::on_wallpaper_tick(),
+                TIMER_LIVEWALL => crate::livewall::tick(),
                 TIMER_WIDGETS => {
                     crate::widgets::tick();
                     update_music();
@@ -662,6 +701,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 TIMER_STATUS => {
                     refresh_status();
                     crate::dock::refresh();
+                    // cada ~30 s devuelve a Windows la memoria que no se usa
+                    thread_local!(static N: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+                    if N.with(|n| { n.set(n.get() + 1); n.get() % 10 == 0 }) {
+                        crate::mem::trim();
+                    }
                 }
                 TIMER_TASKBAR => crate::window::hide_taskbars_if_visible(),
                 TIMER_MOUSE => crate::app::on_mouse_tick(),

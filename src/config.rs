@@ -265,11 +265,15 @@ pub struct Wallpaper {
     pub follow_theme: bool,
     /// Aplicar también la imagen a la pantalla de bloqueo (Win+L).
     pub lock_screen: bool,
+    /// Fondo animado: vacío = ninguno; `gradient`, `glow` o `aurora` (con los colores del tema), o la ruta de un `.gif`.
+    pub animated: String,
+    /// Fotogramas por segundo de los fondos procedurales (5-60).
+    pub animated_fps: u32,
 }
 
 impl Default for Wallpaper {
     fn default() -> Self {
-        Self { dir: String::new(), interval_minutes: 0, fit: "fill".into(), follow_theme: false, lock_screen: true }
+        Self { dir: String::new(), interval_minutes: 0, fit: "fill".into(), follow_theme: false, lock_screen: true, animated: String::new(), animated_fps: 30 }
     }
 }
 
@@ -350,6 +354,7 @@ impl Config {
         if wp.interval_minutes > 1440 {
             return Err("wallpaper.interval_minutes debe estar entre 0 y 1440".into());
         }
+        crate::livewall::validate(&wp.animated, wp.animated_fps)?;
         let d = &self.dock;
         if !(24..=96).contains(&d.icon_size) {
             return Err("dock.icon_size debe estar entre 24 y 96".into());

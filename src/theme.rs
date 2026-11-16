@@ -36,6 +36,12 @@ pub struct ThemeDef {
     /// Estilo del cursor de flecha (ver `cursor`): classic, contrast, accent o soft; vacío = los de Windows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Diseño de la barra: bar, bubbles o ink; ausente = el que haya (salvo ink, que vuelve a bar).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// Fondo animado que trae el tema (ver `livewall::Source`): gradient, glow, aurora, samurai o un .gif.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animated: Option<String>,
 }
 
 fn def(name: &str, bg: &str, fg: &str, dim: &str, accent: &str, accent_text: &str) -> ThemeDef {
@@ -52,6 +58,8 @@ fn def(name: &str, bg: &str, fg: &str, dim: &str, accent: &str, accent_text: &st
         app_icons: None,
         wallpaper: Some("gradient".into()),
         cursor: None,
+        style: None,
+        animated: None,
     }
 }
 
@@ -93,7 +101,23 @@ pub fn builtins() -> Vec<ThemeDef> {
     for (t, c) in v.iter_mut().zip(CURSORS) {
         t.cursor = Some(c.into());
     }
+    v.push(bushido());
     v
+}
+
+/// «Bushidō»: tinta, marfil y carmesí. Trae su pack de iconos, fichas de tinta en el dock, cursor katana,
+/// barra con kanji y el fondo animado «Samurái». Los colores salen de esa escena.
+fn bushido() -> ThemeDef {
+    ThemeDef {
+        font: Some("Yu Mincho".into()),
+        opacity: Some(86),
+        icons: Some("bushido".into()),
+        app_icons: Some("ink".into()),
+        cursor: Some("katana".into()),
+        style: Some("ink".into()),
+        animated: Some("samurai".into()),
+        ..def("Bushidō", "#0e0b0d", "#ece4d6", "#8a7f76", "#c8102e", "#fff6ec")
+    }
 }
 
 /// Carpeta de los temas del usuario.
@@ -163,6 +187,14 @@ pub fn validate(t: &ThemeDef) -> Result<(), String> {
             return Err(format!("estilo de cursor desconocido: {c}"));
         }
     }
+    if let Some(s) = t.style.as_deref().filter(|s| !s.is_empty()) {
+        if !matches!(s, "bar" | "bubbles" | "ink") {
+            return Err(format!("estilo de barra desconocido: {s}"));
+        }
+    }
+    if let Some(a) = t.animated.as_deref().filter(|a| !a.trim().is_empty()) {
+        crate::livewall::validate(a, 30)?;
+    }
     Ok(())
 }
 
@@ -196,6 +228,12 @@ pub fn apply_to_bar(t: &ThemeDef, bar: &mut Bar) {
     if let Some(o) = t.opacity {
         bar.opacity = o;
     }
+    // el diseño de la barra: el del tema si lo trae; si no, se conserva salvo «ink», que es de un tema concreto
+    match t.style.as_deref().filter(|s| !s.is_empty()) {
+        Some(s) => bar.style = s.to_string(),
+        None if bar.style == "ink" => bar.style = "bar".into(),
+        None => {}
+    }
     // los iconos son parte del tema: uno sin pack vuelve a los de Windows
     bar.icons = t.icons.clone().unwrap_or_default();
     bar.app_icons = t.app_icons.clone().unwrap_or_default();
@@ -218,6 +256,8 @@ pub fn from_bar(name: &str, bar: &Bar) -> ThemeDef {
         app_icons: Some(bar.app_icons.clone()),
         wallpaper: Some("gradient".into()),
         cursor: Some(bar.cursor.clone()),
+        style: Some(bar.style.clone()),
+        animated: None,
     }
 }
 
@@ -389,5 +429,45 @@ mod tests {
     fn file_names_are_safe() {
         assert_eq!(file_name("Mi: tema/1"), "Mi tema1");
         assert_eq!(file_name("***"), "");
+    }
+
+    #[test]
+    fn bushido_is_a_complete_dark_theme_with_everything_it_references() {
+        let t = find("Bushidō").expect("el tema debe estar entre los predefinidos");
+        validate(&t).unwrap();
+        let (bg, fg, ac, at) = (parse_color(&t.background).unwrap(), parse_color(&t.foreground).unwrap(), parse_color(&t.accent).unwrap(), parse_color(&t.accent_text).unwrap());
+        assert!(contrast_ratio(fg, bg) >= 7.0, "texto sobre fondo");
+        assert!(contrast_ratio(at, ac) >= 4.5, "texto sobre el acento (el sello rojo)");
+        assert!(contrast_ratio(parse_color(&t.dim).unwrap(), bg) >= 4.5, "texto apagado");
+        assert!(bg & 0xff < 0x30 && (bg >> 8) & 0xff < 0x30 && (bg >> 16) & 0xff < 0x30, "debe ser oscuro");
+        // lo que trae el tema existe de verdad
+        assert_eq!(t.icons.as_deref(), Some("bushido"));
+        assert!(crate::iconset::find("bushido").is_some());
+        assert_eq!(t.app_icons.as_deref(), Some("ink"));
+        assert_eq!(t.cursor.as_deref(), Some("katana"));
+        assert_eq!(t.style.as_deref(), Some("ink"));
+        assert_eq!(t.animated.as_deref(), Some("samurai"));
+        // aplicarlo cambia la barra; un tema normal después devuelve el diseño de la barra a "bar"
+        let mut bar = Bar::default();
+        apply_to_bar(&t, &mut bar);
+        assert_eq!((bar.style.as_str(), bar.icons.as_str(), bar.cursor.as_str(), bar.font.as_str()), ("ink", "bushido", "katana", "Yu Mincho"));
+        apply_to_bar(&builtins()[0], &mut bar);
+        assert_eq!(bar.style, "bar");
+        // y un estilo elegido a mano (burbujas) no se pisa con un tema que no define el suyo
+        bar.style = "bubbles".into();
+        apply_to_bar(&builtins()[1], &mut bar);
+        assert_eq!(bar.style, "bubbles");
+    }
+
+    #[test]
+    fn invalid_style_or_animated_value_is_rejected() {
+        let mut t = builtins().remove(0);
+        t.style = Some("raro".into());
+        assert!(validate(&t).is_err());
+        t.style = None;
+        t.animated = Some(r"C:\x\video.mp4".into());
+        assert!(validate(&t).is_err());
+        t.animated = Some("samurai".into());
+        assert!(validate(&t).is_ok());
     }
 }

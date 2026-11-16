@@ -492,6 +492,8 @@ pub fn close() {
         let _ = KillTimer(Some(hwnd), TIMER_REFRESH);
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
+    let _ = with(|p| p.canvas = None);
+    crate::mem::trim();
     bar::refresh_status();
 }
 

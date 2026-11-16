@@ -108,3 +108,5 @@ interval_minutes = 0   # cambiar de fondo al azar cada N minutos (0 = no)
 fit = "fill"           # fill | fit | stretch | tile | center | span
 follow_theme = false   # al cambiar de tema, generar y aplicar su fondo
 lock_screen = true     # aplicar también la imagen a la pantalla de bloqueo (Win+L)
+animated = ""          # fondo animado: "" (ninguno), "gradient", "glow", "aurora", "samurai" o la ruta de un .gif
+animated_fps = 30      # fotogramas por segundo de los fondos animados con los colores del tema (5-60)

@@ -25,6 +25,7 @@ pub const APP_STYLES: &[(&str, &str, &str)] = &[
     ("tile", "En ficha", "Cada icono sobre una ficha redondeada del color del tema"),
     ("mono", "Monocromo", "Iconos en tonos del color del texto del tema"),
     ("accent", "Acento", "Iconos en tonos del color de acento del tema"),
+    ("ink", "Tinta", "Fichas negras con filo carmesí, iconos en marfil y marcador rojo"),
 ];
 
 /// Resolución con la que se piden los iconos: da margen para la magnificación del dock.
