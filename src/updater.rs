@@ -202,7 +202,7 @@ fn last_check_file() -> Option<PathBuf> {
     Some(data_dir()?.join("update-check.txt"))
 }
 
-fn now_secs() -> u64 {
+pub fn unix_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
@@ -220,7 +220,7 @@ fn write_last_check() {
         if let Some(dir) = f.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(f, now_secs().to_string());
+        let _ = std::fs::write(f, unix_secs().to_string());
     }
 }
 
@@ -267,7 +267,7 @@ pub fn check_async(manual: bool) {
 
 /// Al arrancar: comprueba en segundo plano si está activado y toca (cada 24 h), sin competir con el arranque.
 pub fn check_on_start(enabled: bool) {
-    if !enabled || !is_due(read_last_check(), now_secs()) {
+    if !enabled || !is_due(read_last_check(), unix_secs()) {
         return;
     }
     let _ = std::thread::Builder::new().name("hypr-win-update-start".into()).spawn(|| {

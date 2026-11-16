@@ -6,6 +6,7 @@ pub mod app;
 pub mod appid;
 pub mod apps;
 pub mod audio;
+pub mod autostart;
 pub mod bar;
 pub mod bluetooth;
 pub mod config;

@@ -171,3 +171,23 @@ fn config_validation() {
     assert!(Config::parse("[general]\ngaps_in = 0").is_ok());
     assert_eq!(parse_color("#102030").unwrap(), 0x0030_2010);
 }
+
+#[test]
+fn a_quit_shortcut_is_always_present() {
+    use hypr_win::config::{ensure_quit_bind, FALLBACK_QUIT_BIND};
+    // el config por defecto ya lo trae y no se duplica
+    let cfg = Config::default_config();
+    assert_eq!(cfg.binds.iter().filter(|b| b.split(',').nth(1).is_some_and(|a| a.trim() == "quit")).count(), 1);
+    // una configuración sin salida recibe la de respaldo, y ese atajo es válido
+    let cfg = Config::parse("binds = [\"Super+Return, exec, wt.exe\"]").unwrap();
+    assert!(cfg.binds.iter().any(|b| b == FALLBACK_QUIT_BIND));
+    assert!(parse_binding(FALLBACK_QUIT_BIND).is_ok());
+    // sin binds en absoluto también
+    let mut none: Vec<String> = Vec::new();
+    ensure_quit_bind(&mut none);
+    assert_eq!(none, vec![FALLBACK_QUIT_BIND.to_string()]);
+    // idempotente y sin importar mayúsculas ni espacios
+    let mut one = vec!["Ctrl+Alt+Q ,  QUIT".to_string()];
+    ensure_quit_bind(&mut one);
+    assert_eq!(one.len(), 1);
+}

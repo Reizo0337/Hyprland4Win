@@ -1,3 +1,7 @@
+// Sin ventana de consola: al arrancar solo con Windows no debe abrirse ningún terminal. Si lo lanzas desde uno,
+// `attach_parent_console` vuelve a conectar la salida de texto a ese terminal.
+#![windows_subsystem = "windows"]
+
 use std::path::PathBuf;
 
 use hypr_win::config::Config;
@@ -44,6 +48,23 @@ fn run() -> Result<(), String> {
         window::set_taskbar_visible(true);
         println!("barra de tareas restaurada");
         return Ok(());
+    }
+    // `--autostart=on|off`: activa o desactiva el inicio con Windows y sale
+    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--autostart=").map(str::to_string)) {
+        if let Some(path) = find_config() {
+            hypr_win::config::set_path(std::fs::canonicalize(&path).unwrap_or(path));
+        }
+        match v.as_str() {
+            "on" => hypr_win::autostart::enable()?,
+            "off" => hypr_win::autostart::disable()?,
+            _ => return Err("--autostart debe ser on u off".into()),
+        }
+        println!("inicio con Windows: {}", if v == "on" { "activado" } else { "desactivado" });
+        return Ok(());
+    }
+    // lanzado por el inicio de sesión: esperar a que el escritorio esté listo
+    if std::env::args().any(|a| a == "--autostart") {
+        hypr_win::autostart::wait_for_shell(std::time::Duration::from_secs(30));
     }
     // si nos lanzó una actualización: esperar al proceso anterior y borrar su exe
     hypr_win::updater::on_startup();
@@ -148,9 +169,36 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// Conecta `println!`/`eprintln!` y Ctrl+C a la consola desde la que se lanzó (si hay una). Devuelve si la hay.
+fn attach_parent_console() -> bool {
+    use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS).is_ok() }
+}
+
+/// Un error fatal sin consola (inicio automático) no puede perderse: se escribe en `%APPDATA%\hypr-win\hypr-win.log`.
+fn log_fatal(msg: &str) {
+    let Some(dir) = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("hypr-win")) else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let line = format!("[{}] error: {msg}\n", hypr_win::updater::unix_secs());
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("hypr-win.log")) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 fn main() {
+    let has_console = attach_parent_console();
     if let Err(e) = run() {
         eprintln!("error: {e}");
+        log_fatal(&e);
+        if !has_console {
+            // sin terminal nadie vería el motivo: se muestra un aviso
+            use windows::core::HSTRING;
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            unsafe {
+                MessageBoxW(None, &HSTRING::from(format!("{e}\n\nMás detalles en %APPDATA%\\hypr-win\\hypr-win.log")), &HSTRING::from("hypr-win no pudo iniciarse"), MB_OK | MB_ICONERROR);
+            }
+        }
         std::process::exit(1);
     }
 }

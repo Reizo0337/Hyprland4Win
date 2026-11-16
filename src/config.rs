@@ -327,6 +327,17 @@ pub fn parse_color(s: &str) -> Result<u32, String> {
     Ok(r | (g << 8) | (b << 16))
 }
 
+/// Atajo de salida que se añade si la configuración no tiene ninguno.
+pub const FALLBACK_QUIT_BIND: &str = "Super+Shift+E, quit";
+
+/// Con la consola oculta (inicio automático) ya no vale Ctrl+C: siempre debe haber un atajo para salir.
+pub fn ensure_quit_bind(binds: &mut Vec<String>) {
+    let has_quit = binds.iter().any(|b| b.split(',').nth(1).is_some_and(|a| a.trim().eq_ignore_ascii_case("quit")));
+    if !has_quit {
+        binds.push(FALLBACK_QUIT_BIND.to_string());
+    }
+}
+
 impl Config {
     pub fn default_config() -> Config {
         Self::parse(DEFAULT_TOML).expect("el config.toml embebido debe ser válido")
@@ -340,6 +351,7 @@ impl Config {
                 None => eprintln!("aviso: no se encontró el tema «{}»; se usan los colores de [bar]", cfg.bar.theme),
             }
         }
+        ensure_quit_bind(&mut cfg.binds);
         cfg.validate()?;
         Ok(cfg)
     }

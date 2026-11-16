@@ -148,6 +148,7 @@ enum Target {
     UpdateAll,
     Quit,
     UpdateCheck,
+    ToggleAutostart,
     UpdateInstall,
     Setting(usize),
     SetSetting(usize, String),
@@ -476,6 +477,14 @@ impl Handler for MenuHandler {
                         "actualizar update version nueva instalar",
                     );
                 }
+                let auto = crate::autostart::is_enabled();
+                add(
+                    glyph_row("Iniciar con Windows", if auto { "hypr-win arranca solo al iniciar sesión" } else { "Arrancar hypr-win al iniciar sesión" }, '\u{E7E8}', 0x30D158)
+                        .hint(if auto { "Activado" } else { "Desactivado" })
+                        .section("Inicio"),
+                    Target::ToggleAutostart,
+                    "inicio arrancar automatico windows sesion autostart",
+                );
                 add(
                     glyph_row("Buscar actualizaciones", &format!("Versión instalada: v{}", crate::updater::CURRENT), '\u{E895}', 0x0A84FF).section("Actualizaciones"),
                     Target::UpdateCheck,
@@ -926,6 +935,13 @@ impl Handler for MenuHandler {
                 installer::start(Job { manager: Manager::Winget, kind: Kind::UpgradeAll, id: String::new(), name: "Aplicaciones".into() });
                 Outcome::Close
             }
+            Target::ToggleAutostart => Outcome::Run(Box::new(|| {
+                let on = !crate::autostart::is_enabled();
+                match if on { crate::autostart::enable() } else { crate::autostart::disable() } {
+                    Ok(()) => toast_ok(if on { "Inicio con Windows activado" } else { "Inicio con Windows desactivado" }, if on { "hypr-win arrancará al iniciar sesión" } else { "Ya no arranca solo" }),
+                    Err(e) => crate::toast::upsert(crate::toast::next_id(), '\u{E783}', crate::toast::RED, "No se pudo cambiar el inicio", &e, Some(std::time::Duration::from_secs(8))),
+                }
+            })),
             Target::UpdateCheck => Outcome::Run(Box::new(|| crate::updater::check_async(true))),
             Target::UpdateInstall => Outcome::Run(Box::new(crate::updater::install_async)),
             Target::Quit => {
