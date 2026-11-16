@@ -23,6 +23,7 @@ UPM, ASCENT, DESCENT = 1024, 960, -64
 BOX = 832          # lado del icono (como Phosphor: x 0..832, y 64..896)
 GRID = 24.0
 STROKE = 2.0       # grosor en la rejilla
+ZOOM = 1.3         # los dibujos ocupan ~75 % de la rejilla; se amplían para igualar el tamaño visual de Phosphor
 
 # ---------- primitivas (coordenadas de la rejilla, y hacia abajo) ----------
 
@@ -81,14 +82,14 @@ def speaker(waves):
 
 
 def battery(level, bolt=False, bang=False):
-    out = [Rect(3, 7, 16, 10), S(21.5, 10, 21.5, 14)]
+    out = [Rect(2.5, 6, 17, 12), S(21.8, 10, 21.8, 14)]
     if level:
-        out.append(Fill((5, 9), (5 + 12 * level, 9), (5 + 12 * level, 15), (5, 15)))
+        out.append(Fill((5, 8.6), (5 + 12.6 * level, 8.6), (5 + 12.6 * level, 15.4), (5, 15.4)))
     if bolt:
-        out.append(Fill((12.5, 8), (8, 13), (11, 13), (10, 17), (15, 11), (12, 11)))
+        out.append(Fill((13.4, 6.0), (7.2, 13.0), (11.2, 13.0), (9.8, 18.0), (16.4, 10.2), (12.4, 10.2)))
     if bang:
-        out.append(S(11, 10, 11, 13.2))
-        out.append(Disc(11, 15.2, 0.6))
+        out.append(S(11, 9.2, 11, 12.8))
+        out.append(Disc(11, 15.2, 0.7))
     return out
 
 
@@ -175,7 +176,9 @@ STATUS = {
 
 
 def to_font(pt):
-    return (pt[0] * BOX / GRID, 64 + BOX - pt[1] * BOX / GRID)
+    x, y = pt[0] * BOX / GRID, 64 + BOX - pt[1] * BOX / GRID
+    cx, cy = BOX / 2, 64 + BOX / 2
+    return (cx + (x - cx) * ZOOM, cy + (y - cy) * ZOOM)
 
 
 def clockwise(poly):

@@ -171,10 +171,12 @@ pub fn render(c: &mut Canvas, th: &Theme, font: &Font, opacity: u8, v: &BarView)
         c.fill_round(FRect::new(0.0, 0.0, w, h), 0.0, fill);
         if v.ink {
             // filo carmesí que se desvanece hacia la derecha, como una pincelada
+            // tramos contiguos sin solaparse (si se solapan, el alfa se suma y quedan muescas)
             let steps = 24;
             for i in 0..steps {
+                let (x0, x1) = ((w * i as f32 / steps as f32).round(), (w * (i + 1) as f32 / steps as f32).round());
                 let a = (200.0 * (1.0 - i as f32 / steps as f32).powf(1.4)) as u8;
-                c.fill_round(FRect::new(w * i as f32 / steps as f32, h - 2.0, w / steps as f32 + 1.0, 2.0), 0.0, argb(th.accent, a));
+                c.fill_round(FRect::new(x0, h - 2.0, x1 - x0, 2.0), 0.0, argb(th.accent, a));
             }
         } else {
             c.fill_round(FRect::new(0.0, h - 1.0, w, 1.0), 0.0, argb(th.fg, 28));
@@ -197,7 +199,7 @@ pub fn render(c: &mut Canvas, th: &Theme, font: &Font, opacity: u8, v: &BarView)
         for (i, &occ) in v.occupied.iter().enumerate() {
             let cell = FRect::new(x0 + i as f32 * slot, cy - seal / 2.0 - px(1.0), slot, seal + px(2.0));
             let under_seal = (i as f32 - v.hl).abs() < 0.5;
-            let ink_col = if under_seal { argb(th.accent_text, 255) } else { argb(th.fg, if occ { 230 } else { 90 }) };
+            let ink_col = if under_seal { argb(th.accent_text, 255) } else { argb(th.fg, if occ { 230 } else { 130 }) };
             c.text(font, &kanji(i + 1), cell, ink_col, Align::Center);
         }
     } else {
