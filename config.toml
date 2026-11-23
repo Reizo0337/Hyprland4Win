@@ -7,7 +7,7 @@
 # Acciones: exec <comando>, close, focus <left|right|up|down>,
 #           move <left|right|up|down>, workspace <1-9|next|prev>, movetoworkspace <1-9|next|prev>,
 #           cycle <next|prev>,
-#           fullscreen, togglelayout, launcher, panel, menu, widgets, quit,
+#           fullscreen, togglelayout, launcher, panel, menu, widgets, screensaver, quit,
 #           none (traga el atajo: sirve para anular combinaciones de Windows, p. ej. Win+S)
 binds = [
     "Super+Return, exec, wt.exe",
@@ -33,6 +33,7 @@ binds = [
     "Super+D, launcher",
     "Super+I, panel",
     "Super+Shift+W, widgets",
+    "Super+Shift+L, screensaver",    # Super+L (sin Shift) sigue siendo el bloqueo directo de Windows
     "Super+Shift+E, quit",
     "Super+S, none",
     "Super+W, none",
@@ -103,6 +104,13 @@ pinned = ["Explorador", "Brave", "VSCode", "Claude", "AGY"]
 
 [updates]
 check = true          # buscar actualizaciones al arrancar (cada 24 h); instalar es siempre a petición, en Sistema
+
+[screensaver]
+# Escena animada + widgets propios (Super+Shift+L o por inactividad); solo corre en tu sesión, sin privilegios.
+# Al tocar una tecla o mover el ratón, se pide a Windows que bloquee de verdad: no gestiona contraseñas.
+idle_minutes = 0       # minutos de inactividad para que aparezca solo (0 = solo con el atajo)
+lock_on_wake = true    # al salir, además de ocultarse, pedir a Windows que bloquee la sesión
+widgets = true         # reloj, tiempo, música y sistema encima de la escena animada
 
 [wallpaper]
 # Fondo de escritorio (Super+Espacio > Fondo de pantalla). Se aplica con la interfaz IDesktopWallpaper de Windows.

@@ -51,6 +51,23 @@ pub const ALL: &[Setting] = &[
     s("Dock", "dock", "show_running", "Mostrar las apps abiertas en el dock", "Además de las fijadas", Kind::Bool),
     s("Dock", "dock", "pinned", "Apps fijadas en el dock", "Nombres separados por comas", Kind::List),
     restart(s("Dock", "dock", "enabled", "Activar el dock", "", Kind::Bool)),
+    s(
+        "Salvapantallas",
+        "screensaver",
+        "idle_minutes",
+        "Aparece tras inactividad",
+        "Minutos sin tocar teclado ni ratón; 0 = solo con el atajo (Super+Shift+L)",
+        Kind::Int { min: 0, max: 480, unit: "min" },
+    ),
+    s("Salvapantallas", "screensaver", "widgets", "Mostrar widgets", "Reloj, tiempo, música y sistema sobre la escena animada", Kind::Bool),
+    s(
+        "Salvapantallas",
+        "screensaver",
+        "lock_on_wake",
+        "Bloquear Windows al salir",
+        "Al tocar una tecla o mover el ratón, además de ocultarse, pide a Windows que bloquee la sesión",
+        Kind::Bool,
+    ),
 ];
 
 /// Valor actual para mostrarlo ("8 px", "Sí", "Edge, Terminal").
@@ -79,6 +96,9 @@ pub fn get(cfg: &Config, st: &Setting) -> String {
         ("dock", "show_running") => yes(d.show_running),
         ("dock", "pinned") => d.pinned.join(", "),
         ("dock", "enabled") => yes(d.enabled),
+        ("screensaver", "idle_minutes") => unit(cfg.screensaver.idle_minutes as i32),
+        ("screensaver", "widgets") => yes(cfg.screensaver.widgets),
+        ("screensaver", "lock_on_wake") => yes(cfg.screensaver.lock_on_wake),
         _ => String::new(),
     }
 }
@@ -198,6 +218,9 @@ mod tests {
             ("dock", "show_running", "no", "No"),
             ("dock", "pinned", "Edge, Notepad", "Edge, Notepad"),
             ("dock", "enabled", "no", "No"),
+            ("screensaver", "idle_minutes", "10", "10 min"),
+            ("screensaver", "widgets", "no", "No"),
+            ("screensaver", "lock_on_wake", "sí", "Sí"),
         ];
         assert_eq!(samples.len(), ALL.len(), "falta una muestra para algún ajuste");
         for (section, key, input, shown) in samples {

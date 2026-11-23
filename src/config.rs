@@ -271,6 +271,25 @@ pub struct Wallpaper {
     pub animated_fps: u32,
 }
 
+/// Salvapantallas propio (ver `screensaver.rs`): corre en tu sesión, sin privilegios; al tocar una tecla o
+/// mover el ratón, pide a Windows que bloquee de verdad (no gestiona contraseñas).
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Screensaver {
+    /// Minutos de inactividad para que aparezca (0 = solo con el atajo, nunca por inactividad).
+    pub idle_minutes: u32,
+    /// Al salir (tecla o ratón), pedir a Windows que bloquee la sesión (LockWorkStation).
+    pub lock_on_wake: bool,
+    /// Mostrar reloj, tiempo, música y sistema encima de la escena animada.
+    pub widgets: bool,
+}
+
+impl Default for Screensaver {
+    fn default() -> Self {
+        Self { idle_minutes: 0, lock_on_wake: true, widgets: true }
+    }
+}
+
 impl Default for Wallpaper {
     fn default() -> Self {
         Self { dir: String::new(), interval_minutes: 0, fit: "fill".into(), follow_theme: false, lock_screen: true, animated: String::new(), animated_fps: 30 }
@@ -312,6 +331,8 @@ pub struct Config {
     pub wallpaper: Wallpaper,
     #[serde(default)]
     pub updates: Updates,
+    #[serde(default)]
+    pub screensaver: Screensaver,
     #[serde(default = "default_binds")]
     pub binds: Vec<String>,
 }
@@ -383,6 +404,9 @@ impl Config {
             return Err("wallpaper.interval_minutes debe estar entre 0 y 1440".into());
         }
         crate::livewall::validate(&wp.animated, wp.animated_fps)?;
+        if self.screensaver.idle_minutes > 480 {
+            return Err("screensaver.idle_minutes debe estar entre 0 y 480".into());
+        }
         let d = &self.dock;
         if !(24..=96).contains(&d.icon_size) {
             return Err("dock.icon_size debe estar entre 24 y 96".into());

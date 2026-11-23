@@ -5,7 +5,8 @@
 use std::path::PathBuf;
 
 use hypr_win::config::Config;
-use hypr_win::{app, apps, bar, cursor, dock, keybinds, launcher, panel, toast, widgets, window};
+use hypr_win::gfx::Theme;
+use hypr_win::{app, apps, bar, cursor, dock, keybinds, launcher, panel, screensaver, toast, widgets, window};
 use windows::core::BOOL;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
@@ -107,12 +108,19 @@ fn run() -> Result<(), String> {
     let dock_cfg = cfg.dock.clone();
     let cfg_workspaces = cfg.general.workspaces;
     let bar_cfg = cfg.bar.clone();
+    let screensaver_cfg = cfg.screensaver.clone();
     app::install(app::build(cfg, window::monitors())?);
     {
         let mons: Vec<_> = window::monitors().iter().map(|m| (m.id, m.rect)).collect();
         widgets::create(&bar_cfg, &mons)?;
         unsafe {
             SetTimer(Some(main_hwnd), bar::TIMER_WIDGETS, 1000, None);
+        }
+        if let Ok(theme) = Theme::from_cfg(&bar_cfg) {
+            if let Err(e) = screensaver::create(&screensaver_cfg, &theme, &mons) {
+                eprintln!("aviso: no se pudo preparar el salvapantallas: {e}");
+            }
+            screensaver::set_city(&widgets::city());
         }
     }
     app::start_animated();

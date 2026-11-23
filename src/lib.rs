@@ -37,6 +37,7 @@ pub mod status;
 pub mod livewall;
 pub mod samurai;
 pub mod samurai_data;
+pub mod screensaver;
 pub mod mem;
 pub mod wallpaper;
 pub mod weather;

@@ -70,6 +70,23 @@ const PACKS: [(&str, &[Entry]); 5] = [
 pub const STYLES: [&str; 10] =
     ["classic", "contrast", "accent", "soft", "katana", "rosepine", "macos-regular", "macos-white", "capitaine-gruvbox", "capitaine-nord"];
 
+/// Nombre y descripción de un estilo para el menú (`""` = los cursores de Windows).
+pub fn describe(style: &str) -> (&'static str, &'static str) {
+    match style {
+        "classic" => ("Clásico", "Flecha con los colores del tema"),
+        "contrast" => ("Contraste", "Flecha con los colores del tema, al revés"),
+        "accent" => ("Acento", "Flecha en el color de acento del tema"),
+        "soft" => ("Suave", "Flecha en tonos apagados del tema"),
+        "katana" => ("Katana", "Una espada como flecha, con los colores del tema"),
+        "rosepine" => ("Rosé Pine", "Pack completo: flecha, mano, texto y ocupado"),
+        "macos-regular" => ("macOS", "Pack completo, estilo macOS (flecha negra)"),
+        "macos-white" => ("macOS blanco", "Pack completo, estilo macOS (flecha blanca)"),
+        "capitaine-gruvbox" => ("Capitaine Gruvbox", "Pack completo, tonos Gruvbox"),
+        "capitaine-nord" => ("Capitaine Nord", "Pack completo, tonos Nord"),
+        _ => ("Windows", "Los cursores que tenías"),
+    }
+}
+
 /// Valores originales de `KEYS` (tipo y datos, o `None` si no existían) antes de nuestro primer cambio.
 /// `Some` mientras tengamos cursores propios aplicados.
 type Saved = Vec<(&'static str, Option<RegValue>)>;
@@ -339,6 +356,15 @@ mod tests {
             assert!(colors(s, 0, 0xffffff, 0x888888, 0xff0000, 0xffffff).is_some(), "{s}");
         }
         assert!(colors("raro", 0, 0, 0, 0, 0).is_none());
+    }
+
+    #[test]
+    fn every_style_has_a_menu_description() {
+        for s in STYLES {
+            let (name, note) = describe(s);
+            assert!(!name.is_empty() && !note.is_empty() && name != "Windows", "{s} sin descripción");
+        }
+        assert_eq!(describe("").0, "Windows");
     }
 
     #[test]

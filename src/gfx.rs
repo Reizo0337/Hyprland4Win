@@ -464,6 +464,13 @@ impl Canvas {
         }
     }
 
+    /// Dibuja otro lienzo tal cual (sin escalar) en `(x, y)` de este.
+    pub fn draw_at(&mut self, src: &Canvas, x: f32, y: f32) {
+        unsafe {
+            GdipDrawImageRect(self.g, src.bitmap as *mut GpImage, x, y, src.w as f32, src.h as f32);
+        }
+    }
+
     /// Dibuja el fotograma activo de una imagen animada cubriendo todo el lienzo (recorta lo que sobre).
     pub fn draw_cover(&mut self, img: &AnimatedImage) {
         let (iw, ih) = (img.w.max(1) as f32, img.h.max(1) as f32);

@@ -77,11 +77,12 @@ enum Prop {
     Font,
     Icons,
     AppIcons,
+    Cursor,
     Opacity,
 }
 
 impl Prop {
-    const ALL: [Prop; 9] = [Prop::Background, Prop::Foreground, Prop::Dim, Prop::Accent, Prop::AccentText, Prop::Font, Prop::Icons, Prop::AppIcons, Prop::Opacity];
+    const ALL: [Prop; 10] = [Prop::Background, Prop::Foreground, Prop::Dim, Prop::Accent, Prop::AccentText, Prop::Font, Prop::Icons, Prop::AppIcons, Prop::Cursor, Prop::Opacity];
 
     fn label(self) -> &'static str {
         match self {
@@ -93,12 +94,13 @@ impl Prop {
             Prop::Font => "Fuente",
             Prop::Icons => "Iconos",
             Prop::AppIcons => "Iconos de las aplicaciones",
+            Prop::Cursor => "Cursor del ratón",
             Prop::Opacity => "Opacidad de la barra",
         }
     }
 
     fn is_color(self) -> bool {
-        !matches!(self, Prop::Font | Prop::Icons | Prop::AppIcons | Prop::Opacity)
+        !matches!(self, Prop::Font | Prop::Icons | Prop::AppIcons | Prop::Cursor | Prop::Opacity)
     }
 }
 
@@ -143,6 +145,7 @@ enum Target {
     Shortcut(usize),
     OpenConfig,
     Lock,
+    ShowScreensaver,
     Confirm(Sys),
     Do(Sys),
     UpdateAll,
@@ -162,6 +165,7 @@ enum Target {
     ClearNote,
     LockFromWallpaper,
     LockFromTheme,
+    LockSamurai,
     ToggleClearLogon,
     OpenUri(&'static str),
     WpApply(String),
@@ -461,6 +465,11 @@ impl Handler for MenuHandler {
             }
             Page::System => {
                 add(glyph_row("Bloquear", "Bloquear la sesión", '\u{E72E}', 0x0A84FF), Target::Lock, "bloquear sesion");
+                add(
+                    glyph_row("Salvapantallas", "Escena animada y widgets; al tocar algo, bloquea de verdad", '\u{E790}', 0x5E5CE6).hint("Super+Shift+L"),
+                    Target::ShowScreensaver,
+                    "salvapantallas screensaver animado samurai escena",
+                );
                 add(glyph_row("Suspender", "", '\u{E708}', 0x5E5CE6).hint("›"), Target::Confirm(Sys::Sleep), "dormir");
                 add(glyph_row("Cerrar sesión", "", '\u{E7E8}', 0xFF9F0A).hint("›"), Target::Confirm(Sys::SignOut), "logout");
                 add(glyph_row("Reiniciar", "", '\u{E777}', 0xFF9F0A).hint("›"), Target::Confirm(Sys::Restart), "reboot");
@@ -509,7 +518,7 @@ impl Handler for MenuHandler {
                     add(Row::new(d.name.clone()).subtitle(kind).hint(hint).icon(RowIcon::Swatch(bg, ac, fg)).section(section), Target::ApplyTheme(d.name.clone()), kind);
                 }
                 add(glyph_row("Nuevo tema…", "Parte del tema actual y lo editas", '\u{E710}', 0x0A84FF).section("Crear"), Target::Go(Page::ThemeName), "crear");
-                add(glyph_row("Editar el tema actual…", "Colores, fuente, iconos y opacidad", '\u{E70F}', 0xBF5AF2).section("Crear"), Target::Go(Page::ThemeEdit), "editar colores");
+                add(glyph_row("Editar el tema actual…", "Colores, fuente, iconos, cursor y opacidad", '\u{E70F}', 0xBF5AF2).section("Crear"), Target::Go(Page::ThemeEdit), "editar colores");
                 if !theme::user_themes().is_empty() {
                     add(glyph_row("Eliminar un tema…", "", '\u{E74D}', 0xFF453A).section("Crear"), Target::Go(Page::ThemeDelete), "borrar quitar");
                 }
@@ -529,6 +538,7 @@ impl Handler for MenuHandler {
                         Prop::Font => bar.font.clone(),
                         Prop::Icons => crate::iconset::label(&bar.icons).to_string(),
                         Prop::AppIcons => app_style_label(&bar.app_icons).to_string(),
+                        Prop::Cursor => crate::cursor::describe(&bar.cursor).0.to_string(),
                         Prop::Opacity => format!("{} %", bar.opacity),
                     };
                     let row = Row::new(prop.label()).subtitle(if theme::is_builtin(&bar.theme) { "Se guardará como un tema tuyo" } else { "Se guarda en tu tema" }).hint(value.clone());
@@ -538,6 +548,8 @@ impl Handler for MenuHandler {
                         row.glyph('\u{E8D2}', 0x8E8E93)
                     } else if matches!(prop, Prop::Icons | Prop::AppIcons) {
                         row.glyph('\u{E71D}', 0x8E8E93)
+                    } else if prop == Prop::Cursor {
+                        row.glyph('\u{E7F4}', 0x8E8E93)
                     } else {
                         row.glyph('\u{E706}', 0x8E8E93)
                     };
@@ -580,6 +592,16 @@ impl Handler for MenuHandler {
                         }
                         add(glyph_row("Abrir la carpeta de iconos propios", "Un .png o .ico con el nombre de la app (p. ej. Spotify.png)", '\u{E8B7}', 0x8E8E93).hint("Abrir").section("Tus iconos"), Target::OpenIconsFolder, "carpeta propios");
                         add(glyph_row("Recargar los iconos", "Después de añadir o quitar iconos propios", '\u{E895}', 0x30D158).section("Tus iconos"), Target::ReloadIcons, "actualizar");
+                    }
+                    Prop::Cursor => {
+                        let current = app_bar().cursor;
+                        let hint = |on: bool| if on { "Actual" } else { "Aplicar" };
+                        let (name, note) = crate::cursor::describe("");
+                        add(glyph_row(name, note, '\u{E7F4}', 0x8E8E93).hint(hint(current.is_empty())).section("Cursor"), Target::SetProp(prop, String::new()), "windows original");
+                        for style in crate::cursor::STYLES {
+                            let (name, note) = crate::cursor::describe(style);
+                            add(glyph_row(name, note, '\u{E7F4}', 0x0A84FF).hint(hint(style.eq_ignore_ascii_case(&current))).section("Cursor"), Target::SetProp(prop, style.to_string()), &format!("{name} {style}"));
+                        }
                     }
                     Prop::Opacity => {
                         if let Some(n) = q.parse::<u8>().ok().filter(|n| (20..=100).contains(n)) {
@@ -759,6 +781,11 @@ impl Handler for MenuHandler {
                 };
                 add(glyph_row("Usar el fondo actual del escritorio", "También en el inicio de sesión, que usa esta imagen", '\u{E7F4}', 0x0A84FF).section("Imagen"), Target::LockFromWallpaper, "bloqueo imagen");
                 add(glyph_row("Generar una imagen con el tema", "Aurora con los colores del tema activo", '\u{E790}', 0xFF375F).section("Imagen"), Target::LockFromTheme, "bloqueo tema");
+                add(
+                    glyph_row("Escena samurái (Bushidō)", "Luna, torii y samurái a la resolución de tu pantalla; también en el inicio de sesión", '\u{E790}', 0xC8102E).section("Imagen"),
+                    Target::LockSamurai,
+                    "bloqueo samurai bushido escena katana inicio sesion contraseña",
+                );
                 if wallpaper::has_original_lock() {
                     add(glyph_row("Restaurar la pantalla de bloqueo anterior", "Como Imagen, no Spotlight", '\u{E7A7}', 0xFF9F0A).section("Imagen"), Target::WpRestoreLock, "deshacer");
                 }
@@ -918,6 +945,10 @@ impl Handler for MenuHandler {
                 packages::run_hidden("rundll32.exe", "user32.dll,LockWorkStation");
                 Outcome::Close
             }
+            Target::ShowScreensaver => {
+                crate::screensaver::show();
+                Outcome::Close
+            }
             Target::Confirm(s) => {
                 self.go(Page::Confirm(s));
                 Outcome::Refresh
@@ -963,6 +994,10 @@ impl Handler for MenuHandler {
                         let _ = crate::app::apply_theme(&def);
                         let _ = crate::config::save_value("bar", "theme", &lit_str(&def.name));
                         follow_theme_wallpaper(&def);
+                        // «Bushidō» también viste la pantalla de bloqueo y de contraseña (si el interruptor está activado)
+                        if def.animated.as_deref() == Some("samurai") && crate::app::wallpaper_cfg().lock_screen {
+                            notify(lock_with_samurai().map(|_| "Pantalla de bloqueo: escena samurái".to_string()));
+                        }
                         // un tema puede traer su propio fondo animado (p. ej. «Bushidō»); los demás no tocan el actual
                         if let Some(a) = def.animated.as_deref().filter(|a| !a.trim().is_empty()) {
                             let r = crate::app::set_animated(a).map(|_| {
@@ -1008,6 +1043,7 @@ impl Handler for MenuHandler {
                     None => notify(Err("no se pudo leer el fondo actual".into())),
                 }
             })),
+            Target::LockSamurai => Outcome::Run(Box::new(|| notify(lock_with_samurai().map(|_| "Pantalla de bloqueo: escena samurái".to_string())))),
             Target::LockFromTheme => Outcome::Run(Box::new(|| {
                 let bar = crate::app::current_bar().unwrap_or_default();
                 let name = if bar.theme.is_empty() { "Tema".to_string() } else { bar.theme.clone() };
@@ -1280,6 +1316,7 @@ fn edit_current_theme(prop: Prop, value: &str) -> Result<String, String> {
         Prop::Font => def.font = Some(value.into()),
         Prop::Icons => def.icons = Some(value.into()),
         Prop::AppIcons => def.app_icons = Some(value.into()),
+        Prop::Cursor => def.cursor = Some(value.into()),
         Prop::Opacity => def.opacity = Some(value.parse().map_err(|_| "opacidad no válida".to_string())?),
     }
     theme::save_user(&def)?;
@@ -1320,6 +1357,13 @@ fn follow_theme_wallpaper(def: &ThemeDef) {
 }
 
 /// Avisa del resultado con una notificación flotante.
+/// Genera la escena samurái con los colores del tema Bushidō y la pone como imagen de bloqueo e inicio de sesión.
+fn lock_with_samurai() -> Result<(), String> {
+    let def = theme::find("Bushidō").ok_or("no se encontró el tema Bushidō")?;
+    let path = wallpaper::generate_samurai(color(&def.background), color(&def.accent))?;
+    wallpaper::set_lock_screen(&path.to_string_lossy())
+}
+
 fn notify(result: Result<String, String>) {
     let id = crate::toast::next_id();
     let ttl = Some(std::time::Duration::from_secs(4));

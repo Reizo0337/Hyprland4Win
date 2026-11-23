@@ -70,6 +70,8 @@ pub enum Action {
     Menu,
     /// Trae los widgets de escritorio al frente (o los vuelve a dejar detrás).
     Widgets,
+    /// Muestra el salvapantallas ahora mismo (no bloquea Windows por sí solo).
+    Screensaver,
     /// No hace nada: solo captura la combinación para que Windows no la reciba.
     None,
 }
@@ -191,6 +193,7 @@ pub fn parse_binding(s: &str) -> Result<Binding, String> {
         "panel" => Action::Panel,
         "menu" => Action::Menu,
         "widgets" => Action::Widgets,
+        "screensaver" => Action::Screensaver,
         "none" => Action::None,
         other => return Err(format!("acción desconocida: '{other}'")),
     };
@@ -523,6 +526,7 @@ pub fn describe(a: &Action) -> String {
         Action::Panel => "Panel de control".into(),
         Action::Menu => "Menú".into(),
         Action::Widgets => "Mostrar los widgets".into(),
+        Action::Screensaver => "Mostrar el salvapantallas".into(),
         Action::Quit => "Salir de hypr-win".into(),
         Action::None => "Bloquear un atajo de Windows".into(),
     }

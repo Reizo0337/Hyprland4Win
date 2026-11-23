@@ -94,6 +94,7 @@ pub fn adopt_existing() {
 
 pub fn shutdown() {
     crate::livewall::stop();
+    crate::screensaver::shutdown();
     with(|a| a.restore_all());
 }
 
@@ -198,6 +199,10 @@ pub fn apply_theme(def: &crate::theme::ThemeDef) -> Result<(), String> {
     crate::toast::set_theme(&bar_cfg)?;
     crate::switcher::set_theme(&bar_cfg)?;
     crate::widgets::set_theme(&bar_cfg)?;
+    // el cursor del ratón es del tema: se escribe y se recarga en vivo (vacío = los de Windows)
+    if let Err(e) = crate::cursor::apply(&bar_cfg) {
+        eprintln!("aviso: no se pudo aplicar el cursor del tema: {e}");
+    }
     // el fondo animado procedural usa los colores del tema
     crate::livewall::set_colors(crate::config::parse_color(&bar_cfg.background).unwrap_or(0), crate::config::parse_color(&bar_cfg.accent).unwrap_or(0xff840a));
     Ok(())
@@ -313,6 +318,7 @@ impl App {
             dock::set_monitors(&self.mon_ids());
             crate::widgets::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
             crate::livewall::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
+            crate::screensaver::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
             if let Some(m) = self.mons.first() {
                 crate::toast::set_monitor(m.rect);
             }
@@ -378,7 +384,8 @@ impl App {
         self.mons = now;
         dock::set_monitors(&self.mon_ids());
         crate::widgets::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
-            crate::livewall::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
+        crate::livewall::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
+        crate::screensaver::set_monitors(&all.iter().map(|m| (m.id, m.rect)).collect::<Vec<_>>());
         if let Some(m) = self.mons.first() {
             crate::toast::set_monitor(m.rect);
         }
@@ -1025,6 +1032,11 @@ impl App {
         crate::switcher::set_theme(&bar_cfg)?;
         crate::widgets::set_theme(&bar_cfg)?;
         crate::livewall::set_colors(crate::config::parse_color(&bar_cfg.background).unwrap_or(0), crate::config::parse_color(&bar_cfg.accent).unwrap_or(0xff840a));
+        if let Ok(theme) = crate::gfx::Theme::from_cfg(&bar_cfg) {
+            let _ = crate::screensaver::set_theme(&theme);
+        }
+        crate::screensaver::set_config(&self.cfg.screensaver);
+        crate::screensaver::set_city(&crate::widgets::city());
         if old.bar.height != bar_cfg.height {
             let mons = window::monitors();
             bar::set_height(bar_cfg.height, &mons[..self.mons.len().min(mons.len())]);
@@ -1145,6 +1157,7 @@ impl App {
             Action::Panel => panel::toggle(self.mons[self.model.focused_mon].rect, bar::height_px()),
             Action::Menu => crate::menu::toggle(self.mons[self.model.focused_mon].rect),
             Action::Widgets => crate::widgets::toggle_peek(),
+            Action::Screensaver => crate::screensaver::show(),
             Action::None => {}
             Action::Fullscreen => self.toggle_fullscreen(),
             Action::ToggleLayout => {

@@ -39,6 +39,10 @@ const TIMER_STATUS: usize = 7;
 pub const TIMER_WALLPAPER: usize = 8;
 pub const TIMER_WIDGETS: usize = 9;
 pub const TIMER_LIVEWALL: usize = 11;
+/// Comprobación periódica de inactividad del sistema (siempre activo).
+pub const TIMER_SCREENSAVER_IDLE: usize = 12;
+/// Fotograma del salvapantallas (solo mientras está activo).
+pub const TIMER_SCREENSAVER_TICK: usize = 13;
 /// Animación de la música (solo corre mientras suena algo).
 const TIMER_MUSIC: usize = 10;
 
@@ -695,6 +699,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 TIMER_BAR => step_highlight(),
                 TIMER_WALLPAPER => crate::app::on_wallpaper_tick(),
                 TIMER_LIVEWALL => crate::livewall::tick(),
+                TIMER_SCREENSAVER_IDLE => crate::screensaver::on_idle_tick(),
+                TIMER_SCREENSAVER_TICK => crate::screensaver::tick(),
                 TIMER_WIDGETS => {
                     crate::widgets::tick();
                     update_music();

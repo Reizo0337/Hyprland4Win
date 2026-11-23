@@ -536,9 +536,74 @@ pub fn generate(kind: Kind, theme_name: &str, bg: u32, accent: u32) -> Result<Pa
     }
 }
 
+// ---------- escena samurái como imagen fija ----------
+
+/// Resolución de la imagen de bloqueo: la del monitor principal, entre 1280x720 y 3840x2160.
+pub fn still_resolution(monitor: Option<(i32, i32)>) -> (i32, i32) {
+    let (w, h) = monitor.unwrap_or((1920, 1080));
+    (w.clamp(1280, 3840), h.clamp(720, 2160))
+}
+
+/// Un fotograma de la escena samurái (`samurai.rs`) a la resolución dada: se calcula en pequeño y se amplía sin
+/// suavizar, igual que el fondo animado, para que conserve el aspecto pixel art.
+pub fn render_samurai_still(w: i32, h: i32, bg: u32, accent: u32) -> Option<crate::gfx::Canvas> {
+    let (sw, sh) = crate::samurai::scene_size(w, h);
+    let mut small = crate::gfx::Canvas::new(sw, sh)?;
+    // t = 6 s: estrellas, niebla y pétalos bien repartidos
+    small.fill_from(&crate::samurai::render(sw as usize, sh as usize, 6.0, bg, accent));
+    let mut big = crate::gfx::Canvas::new(w, h)?;
+    big.draw_scaled(&small, false);
+    Some(big)
+}
+
+/// Guarda la escena samurái como PNG en la carpeta de generados. Devuelve la ruta.
+pub fn generate_samurai(bg: u32, accent: u32) -> Result<PathBuf, String> {
+    let dir = generated_dir().ok_or("no se encontró la carpeta de datos")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let monitor = connected_monitors().first().map(|m| (m.1, m.2));
+    let (w, h) = still_resolution(monitor);
+    let canvas = render_samurai_still(w, h, bg, accent).ok_or("no se pudo crear la imagen")?;
+    let path = dir.join(format!("{}.png", crate::theme::file_name("Bushidō - Samurái")));
+    if canvas.save_png(&path.to_string_lossy()) {
+        Ok(path)
+    } else {
+        Err(format!("no se pudo guardar la imagen en {}", dir.display()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mano: `cargo test dump_lock_image -- --ignored` escribe `%TEMP%\lock_samurai.png`.
+    #[test]
+    #[ignore]
+    fn dump_lock_image() {
+        let c = render_samurai_still(1920, 1080, 0x0d0b0e, 0x2e10c8).unwrap();
+        assert!(c.save_png(&std::env::temp_dir().join("lock_samurai.png").to_string_lossy()));
+    }
+
+    #[test]
+    fn the_lock_image_resolution_is_clamped() {
+        assert_eq!(still_resolution(None), (1920, 1080));
+        assert_eq!(still_resolution(Some((2560, 1440))), (2560, 1440));
+        assert_eq!(still_resolution(Some((800, 600))), (1280, 720));
+        assert_eq!(still_resolution(Some((7680, 4320))), (3840, 2160));
+    }
+
+    #[test]
+    fn the_samurai_still_has_the_right_size_and_real_content() {
+        let c = render_samurai_still(1280, 720, 0x0d0b0e, 0x2e10c8).expect("lienzo");
+        assert_eq!((c.w, c.h), (1280, 720));
+        let px = c.pixels();
+        assert!(px.iter().all(|p| p >> 24 == 0xff), "opaca");
+        let distinct: std::collections::HashSet<u32> = px.iter().copied().collect();
+        assert!(distinct.len() > 500, "una escena, no un color liso: {}", distinct.len());
+        // ampliada sin suavizar: bloques de 4x4 idénticos (1280/4 = 320 columnas del lienzo pequeño)
+        assert_eq!(px[0], px[1]);
+        assert_eq!(px[0], px[3]);
+        assert_eq!(px[3], px[3 + 1280 * 3]);
+    }
 
     const BG: u32 = 0x201e1e; // #1e1e20
     const ACCENT: u32 = 0xff840a; // #0a84ff
