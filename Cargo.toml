@@ -1,6 +1,6 @@
 [package]
 name = "hypr-win"
-version = "1.5.1"
+version = "1.5.2"
 edition = "2021"
 description = "Prototipo de gestor de ventanas en mosaico para Windows 11, inspirado en Hyprland"
 
